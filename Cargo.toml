@@ -1,6 +1,6 @@
 [package]
 name = "daozai"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 license = "MIT"
 description = "Windows Island：桌面状态与效率助手"

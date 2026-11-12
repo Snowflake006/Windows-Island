@@ -1551,7 +1551,14 @@ impl App {
         let balances=self.quota_balance_layout(&ctx);
         let reserve=balances.iter().map(|(_,extra)|extra).sum::<f32>()+if self.settings.clock_period!=0{40.0}else{0.0};
         if self.settings.companion_badge {layout.add_badge();}
-        if self.companion_slot_enabled() {let available=WIN_W-32.0-layout.width-12.0-reserve;if available>=16.0{layout.add_companion(self.companion_width(&ctx).min(available));}}
+        if self.companion_slot_enabled() {
+            let width=self.companion_width(&ctx);
+            let full_label=self.companion.visible.len()==1 && self.settings.companion_labels;
+            let available=WIN_W-32.0-layout.width-12.0-reserve;
+            // A single status takes its full width; the shared header can fit the
+            // entire row when many other components are enabled.
+            if full_label{layout.add_companion(width);}else if available>=16.0{layout.add_companion(width.min(available));}
+        }
         layout.reorder(&bar::full_order(&self.settings.resident_order,self.settings.show_battery));
         for (position,extra) in balances{layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
@@ -1666,6 +1673,18 @@ impl App {
         let want = (inside && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         self.update_pet(env, cx);
+
+        // A growing/contracting body must already cover the complete single-agent
+        // slot. Its content and neighbors can continue springing into place.
+        if !self.side() && !self.open && self.notice.is_none() && !self.island_lyrics_active()
+            && !self.effective_minimal() && self.settings.companion_labels && self.companion.visible.len()==1 {
+            let layout=self.resident.current();
+            if let Some(center)=layout.x[bar::COMPANION]{
+                let fit=((WIN_W-32.0)/self.resident.target.width).min(1.0);
+                let minimum=((center.abs()+layout.widths[bar::COMPANION]/2.0)*fit*2.0+16.0).min(WIN_W-32.0);
+                if self.w.pos<minimum {self.w.pos=minimum;self.w.vel=self.w.vel.max(0.0);}
+            }
+        }
 
         // ---------- 绘制 ----------
         let p = self.progress();

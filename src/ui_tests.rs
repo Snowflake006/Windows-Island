@@ -6434,7 +6434,9 @@ fn companion_spacing_matches_rendered_content_for_one_to_eight_agents(){
             assert!((x-width/2.0-focus_right-CONTENT_GAP).abs()<0.1);
             if count==1 {
                 let text=h.shapes.iter().find_map(|shape|match &shape.shape{egui::Shape::Text(t) if t.galley.text()=="已完成"=>Some(t),_=>None}).expect("single status label");
-                assert!((text.pos.x+text.galley.size().x-(crate::app::WIN_W/2.0+x+width/2.0)).abs()<1.0,"label must end at slot boundary");
+                let ink_right=text.pos.x+text.galley.mesh_bounds.right();
+                let padding=crate::app::WIN_W/2.0+x+width/2.0-ink_right;
+                assert!((-0.05..=2.1).contains(&padding),"label ink must end at slot boundary: {padding}");
             }else if count<=limit as usize{assert!((width-(count as f32*19.0+(count-1) as f32*CONTENT_GAP)).abs()<0.1);}
             else{assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t)if t.galley.text()==format!("+{}",count-limit as usize))));}
         }
@@ -6456,6 +6458,67 @@ fn companion_spacing_release_gallery(){
             let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(crate::app::CANVAS_W,WIN_H))),time:Some(h.t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
             let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{h.app.frame(ui,Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H)),&env);});});raster.update_textures(&output.textures_delta);
             if frame==119{raster.buf.fill([0.94,0.94,0.94,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw((crate::app::CANVAS_W*2.0)as u32,(WIN_H*2.0)as u32,rgba).unwrap();let width=(h.app.resident.target.width*2.0+20.0).ceil()as u32;let left=(WIN_W-width as f32/2.0).max(0.0)as u32;image::imageops::crop_imm(&image,left,0,width,78).to_image().save(dest.join(format!("agents-{count}.png"))).unwrap();}
+            raster.free_textures(&output.textures_delta);
+        }
+    }
+}
+
+#[test]
+fn companion_single_status_is_complete_across_dpi_scale_and_animation(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::env::var_os("ISLAND_FULL_LABEL_PREVIEW").map(std::path::PathBuf::from);
+    if let Some(dest)=&dest{std::fs::create_dir_all(dest).unwrap();}
+    for dpi in [1.0,1.25,1.5,2.0]{for island_size in [80,100,125,140]{for quota_count in [2,8]{for position in ["middle","first","last"]{
+        let ppp=dpi*island_size as f32/100.0;
+        let mut h=H::new();h.app.settings.island_size=island_size;h.app.settings.pet=false;h.app.settings.companion_todos=false;
+        h.app.settings.resident_order=vec![crate::bar_layout::BADGE,crate::bar_layout::MUSIC,crate::bar_layout::FOCUS,crate::bar_layout::COMPANION,crate::bar_layout::QUOTA,crate::bar_layout::PET,crate::bar_layout::BATTERY,crate::bar_layout::CLOCK];
+        if position=="first"{h.app.settings.resident_order=vec![crate::bar_layout::COMPANION,crate::bar_layout::BADGE,crate::bar_layout::MUSIC,crate::bar_layout::FOCUS,crate::bar_layout::QUOTA,crate::bar_layout::PET,crate::bar_layout::BATTERY,crate::bar_layout::CLOCK];}
+        if position=="last"{h.app.settings.resident_order=vec![crate::bar_layout::BADGE,crate::bar_layout::MUSIC,crate::bar_layout::FOCUS,crate::bar_layout::QUOTA,crate::bar_layout::PET,crate::bar_layout::BATTERY,crate::bar_layout::CLOCK,crate::bar_layout::COMPANION];}
+        h.quota_accounts(quota_count);h.app.pomo.running=true;h.app.pomo.remaining=600.0;
+        let mut raster=crate::preview_raster::Raster::new((crate::app::CANVAS_W*ppp).round()as usize,(WIN_H*ppp).round()as usize);
+        for state in ["thinking","tool","unknown","complete","error","stopped","idle","thinking"]{
+            let agent=crate::companion::Agent{name:"Codex".into(),state:state.into(),..Default::default()};let label=agent.label();
+            for frame in 0..36{
+                h.t+=1.0/60.0;
+                let agents=if frame==0{vec![agent.clone(),crate::companion::Agent{name:"Claude".into(),state:"thinking".into(),..Default::default()}]}else{vec![agent.clone()]};
+                let env=Env{t:h.t,clock:"23:51:00".into(),today:"2026-11-12".into(),bt_ready:true,companion:crate::companion::Snapshot{ready:true,agents,..Default::default()},..Default::default()};
+                let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(crate::app::CANVAS_W,WIN_H))),time:Some(h.t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
+                let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{h.app.frame(ui,Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H)),&env);});});
+                if frame>0{
+                    let (shape,text)=output.shapes.iter().find_map(|shape|match &shape.shape{egui::Shape::Text(text)if text.galley.text()==label=>Some((shape,text)),_=>None}).unwrap_or_else(||panic!("full status missing: {state}, dpi={dpi}, size={island_size}, quotas={quota_count}, position={position}, frame={frame}"));
+                    let glyphs=text.galley.mesh_bounds.translate(text.pos.to_vec2());
+                    assert!(shape.clip_rect.left()<=glyphs.left()+0.01 && shape.clip_rect.right()+0.01>=glyphs.right(),"status clipped: {state}, dpi={dpi}, size={island_size}, quotas={quota_count}, position={position}, frame={frame}, clip={:?}, glyphs={glyphs:?}",shape.clip_rect);
+                    assert!(!output.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t)if t.galley.text().contains("思考…"))));
+                }
+                if let Some(dest)=&dest{
+                    if dpi==2.0 && island_size==100 && quota_count==2 && position=="middle"{
+                        raster.update_textures(&output.textures_delta);
+                        if frame==35{raster.buf.fill([0.94,0.94,0.94,1.0]);raster.draw(&h.ctx.tessellate(output.shapes.clone(),output.pixels_per_point),output.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw((crate::app::CANVAS_W*ppp).round()as u32,(WIN_H*ppp).round()as u32,rgba).unwrap();let width=(h.app.resident.target.width*ppp+20.0).ceil()as u32;let left=(WIN_W*ppp/2.0-width as f32/2.0).max(0.0)as u32;image::imageops::crop_imm(&image,left,0,width,78).to_image().save(dest.join(format!("status-{state}.png"))).unwrap();}
+                        raster.free_textures(&output.textures_delta);
+                    }
+                }
+            }
+        }
+    }}}}
+}
+
+#[test]
+fn vpn_clock_uses_green_yellow_red_at_latency_boundaries(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let green=egui::Color32::from_rgb(48,209,88);let yellow=egui::Color32::from_rgb(255,214,10);let red=egui::Color32::from_rgb(255,69,58);
+    for (name,connected,delay,tint,expected) in [
+        ("green",true,Some(40.0),true,Some(green)),("green-boundary",true,Some(150.0),true,Some(green)),
+        ("yellow-start",true,Some(150.1),true,Some(yellow)),("yellow",true,Some(220.0),true,Some(yellow)),("yellow-boundary",true,Some(300.0),true,Some(yellow)),
+        ("red",true,Some(300.1),true,Some(red)),("timeout",true,None,true,Some(red)),
+        ("disconnected",false,Some(40.0),true,None),("tint-disabled",true,Some(40.0),false,None)]{
+        let mut h=H::new();h.app.settings.vpn_tint=tint;h.app.companion.snapshot.vpn=crate::companion::Vpn{connected,delay,text:name.into()};let mut raster=crate::preview_raster::Raster::new(160,50);
+        for frame in 0..90{
+            let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(160.0,50.0))),time:Some(frame as f64/60.0),..Default::default()},|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{let c=crate::paint::Card::new(ui,Pos2::ZERO,ui.max_rect());h.app.vpn_clock(&c,20.0,8.0,60.0,24.0);c.text(20.0,26.0,"23:51",18.0,crate::theme::W::Bold,egui::Color32::WHITE,crate::paint::H::Left);});});
+            raster.update_textures(&output.textures_delta);
+            if frame==89{
+                let color=output.shapes.iter().find_map(|shape|match &shape.shape{egui::Shape::Rect(rect)if (rect.rect.width()-72.0).abs()<0.01&&(rect.rect.height()-24.0).abs()<0.01=>Some(rect.fill),_=>None});assert_eq!(color,expected,"VPN palette mismatch: {name}");
+                if let Some(dest)=std::env::var_os("ISLAND_VPN_COLORS_PREVIEW"){let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();raster.buf.fill([0.0,0.0,0.0,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);image::save_buffer(dest.join(format!("vpn-{name}.png")),&rgba,160,50,image::ColorType::Rgba8).unwrap();}
+            }
             raster.free_textures(&output.textures_delta);
         }
     }

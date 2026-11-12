@@ -1181,7 +1181,7 @@ impl App {
                         });
                         settings_label(ui,"连接与解锁");
                         settings_card(ui,|ui|{
-                            setting_row(ui,"VPN 延迟提示","VPN 连接时显示彩色时间胶囊：蓝色流畅、橙色偏慢、红色高延迟",&mut self.settings.vpn_clock);
+                            setting_row(ui,"VPN 延迟提示","VPN 连接时显示彩色时间胶囊：绿色低延迟、黄色较高延迟、红色很高延迟",&mut self.settings.vpn_clock);
                             ui.add_enabled_ui(self.settings.vpn_clock,|ui|{setting_row(ui,"时间胶囊底色","开启后以明亮整块胶囊显示 VPN 状态，关闭后恢复普通时间",&mut self.settings.vpn_tint);});
                             ui.separator();
                             setting_row(ui,"解锁问候","在岛内播放蓝色解锁提示和面容动画",&mut self.settings.unlock_feedback);

@@ -92,8 +92,12 @@ fn agent_icons_width(count:usize)->f32 {if count==0{0.0}else{count as f32*AGENT_
 
 impl App {
     fn companion_text_width(&self,ctx:&egui::Context,text:&str,size:f32)->f32 {
-        let scale=self.settings.island_scale();
-        ctx.fonts(|fonts|fonts.layout_no_wrap(text.to_owned(),theme::font(size*scale,W::Regular),Color32::WHITE).size().x/scale)
+        // Root viewport scaling already updates pixels_per_point. Measure the same
+        // logical font used by Card, leaving one physical pixel for glyph overhang.
+        ctx.fonts(|fonts|{
+            let galley=fonts.layout_no_wrap(text.to_owned(),theme::font(size,W::Regular),Color32::WHITE);
+            galley.size().x.max(galley.mesh_bounds.right())
+        })+1.0/ctx.pixels_per_point()
     }
     fn companion_agents_width(&self,ctx:&egui::Context,shown:usize,total:usize)->f32 {
         agent_icons_width(shown)+if total>shown{AGENT_GAP+self.companion_text_width(ctx,&format!("+{}",total-shown),10.0)}else{0.0}
@@ -108,8 +112,10 @@ impl App {
     pub(crate) fn companion_width(&self,ctx:&egui::Context)->f32 {
         if !self.companion_slot_enabled(){return 0.0;}
         if self.companion.greeting(self.t){
-            let scale=self.settings.island_scale();
-            let label=ctx.fonts(|fonts|fonts.layout_no_wrap("已解锁".into(),theme::font(11.0*scale,W::Semibold),Color32::WHITE).size().x/scale);
+            let label=ctx.fonts(|fonts|{
+                let galley=fonts.layout_no_wrap("已解锁".into(),theme::font(11.0,W::Semibold),Color32::WHITE);
+                galley.size().x.max(galley.mesh_bounds.right())
+            })+1.0/ctx.pixels_per_point();
             return label+if self.companion.snapshot.unlock_hint=="face"{24.0+AGENT_GAP}else{0.0};
         }
         match self.companion.visible.as_slice(){
@@ -142,8 +148,8 @@ impl App {
         let target=if !vpn.connected{0.0}else{match vpn.delay{Some(d) if d<=150.0=>1.0,Some(d) if d<=300.0=>2.0,_=>3.0}};
         let k=c.ui.ctx().animate_value_with_time(egui::Id::new("vpn-clock"),target,0.62);
         // Match the reference: a solid, bright time capsule with no separate indicator dot.
-        let blue=Color32::from_rgb(0,145,255);let amber=Color32::from_rgb(255,159,10);let red=Color32::from_rgb(255,69,58);
-        let color=if k<1.0{blue}else if k<2.0{paint::mix(blue,amber,k-1.0)}else{paint::mix(amber,red,k-2.0)};
+        let green=Color32::from_rgb(48,209,88);let yellow=Color32::from_rgb(255,214,10);let red=Color32::from_rgb(255,69,58);
+        let color=if k<1.0{green}else if k<2.0{paint::mix(green,yellow,k-1.0)}else{paint::mix(yellow,red,k-2.0)};
         if k>0.01 && self.settings.vpn_tint {
             c.faded(k.min(1.0)).fill(x-6.0,y,w+12.0,h,h/2.0,color);
         }
@@ -195,7 +201,10 @@ impl App {
             let w=if agents.len()==1{width}else{AGENT_WIDTH};
             let hit=c.hit(xx-8.0,2.0,w,27.0,("live-agent",&a.name));
             if hit.on_hover_text(format!("{} · {}",a.name,a.label())).clicked(){self.companion.panel=true;self.companion.selected=Some(a.name.clone());self.show_page(6);}
-            if agents.len()==1 && width>=AGENT_WIDTH+AGENT_GAP+10.5 && self.settings.companion_labels{shifted.text(x+AGENT_WIDTH+AGENT_GAP,19.0,&shifted.fit(a.label(),10.5,W::Regular,(width-AGENT_WIDTH-AGENT_GAP).max(0.0)),10.5,W::Regular,a.color(),H::Left);}
+            if agents.len()==1 && self.settings.companion_labels{
+                // A status label is never abbreviated; layout reserves its full width.
+                shifted.text(x+AGENT_WIDTH+AGENT_GAP,19.0,a.label(),10.5,W::Regular,a.color(),H::Left);
+            }
         }
         if agents.len()>capacity {
             let more=format!("+{}",agents.len()-capacity);

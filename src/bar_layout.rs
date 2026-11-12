@@ -164,8 +164,19 @@ impl Motion {
     }
     pub fn current(&self)->Layout {
         let mut layout=self.target.clone();
-        if layout.x[COMPANION].is_some(){layout.widths[COMPANION]=self.companion_width.pos.max(0.0);}
         for (i,x) in layout.x.iter_mut().enumerate() {if x.is_some(){*x=Some(self.positions[i].pos);}}
+        if let Some(center)=layout.x[COMPANION]{
+            let animated=self.companion_width.pos.max(0.0);
+            let width=animated.max(self.companion_width.target);
+            layout.widths[COMPANION]=width;
+            // Text can grow immediately or become the single visible agent while
+            // the row is contracting. Keep its full target width and move neighbors
+            // by the same amount so the content is never clipped or overlapped.
+            let extra=(width-animated)/2.0;
+            for (slot,x) in layout.x.iter_mut().enumerate(){
+                if slot!=COMPANION{if let Some(x)=x{*x+=if *x<center{-extra}else{extra};}}
+            }
+        }
         layout
     }
     pub fn position(&self,slot:usize)->f32 {self.positions[slot].pos}
