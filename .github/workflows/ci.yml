@@ -11,7 +11,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --locked --all-targets --features record
       - run: cargo test --locked --lib companion -- --test-threads=1
-      - run: cargo test --locked --lib updates:: -- --test-threads=1
+      - run: 'cargo test --locked --lib updates:: -- --test-threads=1'
       - run: cargo test --locked --lib bar_layout::tests -- --test-threads=1
       - name: Update replacement and data preservation
         shell: pwsh
