@@ -61599,3 +61599,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 
+
+
+Companion integration runtime
+-----------------------------
+CPython 3.14.10 Windows embeddable distribution is included in
+assets/runtime/python-3.14.10-embed-amd64.zip. The PSF license and associated
+third-party notices are preserved as LICENSE.txt inside that archive and
+inside the extracted runtime. No Windows system font is redistributed.
+Agent brand asset sources: assets/agents/SOURCES.md.

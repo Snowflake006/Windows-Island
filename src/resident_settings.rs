@@ -3,13 +3,13 @@ use eframe::egui::{self,Color32,RichText,Rect,Pos2,Vec2};
 
 pub(crate) fn preview_layout(order:&[usize],quotas:usize)->Layout {
     let mut layout=Layout::new(true,quotas.max(1),true,true,false,true);
-    layout.reorder(order);layout
+    layout.add_badge();layout.add_companion(112.0);layout.reorder(order);layout
 }
 
 impl crate::app::App {
     pub(crate) fn resident_order_settings(&mut self,ui:&mut egui::Ui){
-        let default=if self.settings.show_battery {DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,BATTERY,MUSIC,FOCUS]};
-        let mut order=if valid_order(&self.settings.resident_order){self.settings.resident_order.clone()}else{default.clone()};
+        let default=full_order(&[],self.settings.show_battery);
+        let mut order=full_order(&self.settings.resident_order,self.settings.show_battery);
         ui.horizontal(|ui|{
             ui.label(RichText::new("拖动岛上的图标").color(ui.visuals().text_color()));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
@@ -18,7 +18,8 @@ impl crate::app::App {
         });
         ui.add_space(12.0);
         let indices=self.quota_bar_indices();let count=indices.len();
-        let mut layout=preview_layout(&order,count);
+        let mut layout=Layout::new(true,count.max(1),true,true,false,true);
+        layout.add_badge();layout.add_companion(if self.settings.companion_bar{self.companion_width(ui.ctx())}else{112.0});layout.reorder(&order);
         for (position,extra) in self.quota_balance_layout(ui.ctx()){layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
         let (stage,_)=ui.allocate_exact_size(Vec2::new(ui.available_width(),100.0),egui::Sense::hover());
@@ -46,10 +47,13 @@ impl crate::app::App {
         let pointer=ui.ctx().pointer_interact_pos();
         let dragged=egui::DragAndDrop::payload::<usize>(ui.ctx());
         let mut movement=None;
-        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",_=>"吉祥物"};
+        let drag_key=ui.id().with("resident-last-target");
+        let last_target=ui.ctx().data(|d|d.get_temp::<(usize,usize)>(drag_key));
+        let mut hovered_target=None;
+        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",BADGE=>"徽标",COMPANION=>"智能体与待办",_=>"吉祥物"};
         for (index,&slot) in order.iter().enumerate(){
             let x=cx+layout.x[slot].unwrap();
-            let width=match slot{CLOCK=>if self.settings.clock_period!=0 {84.0}else{44.0},BATTERY=>20.0,PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,_=>{
+            let width=match slot{BADGE=>layout.widths[BADGE],COMPANION=>layout.widths[COMPANION],CLOCK=>if self.settings.clock_period!=0 {84.0}else{44.0},BATTERY=>20.0,PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,_=>{
                 let left=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x-layout.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
                 let right=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x+layout.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);
                 right-left
@@ -59,17 +63,22 @@ impl crate::app::App {
             let response=ui.interact(rect,ui.id().with(("resident-icon",slot)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Grab);
             response.dnd_set_drag_payload(slot);
             if let (Some(from),Some(point))=(dragged.as_deref(),pointer){
-                if *from!=slot && rect.contains(point) && ui.input(|i|i.pointer.primary_down()){movement=Some((*from,index));}
+                if rect.contains(point) && ui.input(|i|i.pointer.primary_down()){
+                    hovered_target=Some(slot);
+                    if *from!=slot && last_target!=Some((*from,slot)){movement=Some((*from,index));ui.ctx().data_mut(|d|d.insert_temp(drag_key,(*from,slot)));}
+                }
             }
             let is_dragged=dragged.as_deref()==Some(&slot);
             let dx=if is_dragged{pointer.map(|p|((p.x-origin.x)/scale-(left+width/2.0)).clamp(-left,layout.width-left-width)).unwrap_or(0.0)}else{0.0};
             if is_dragged {ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
             else if response.hovered(){ui.painter().rect_filled(rect,6.0,Color32::from_white_alpha(18));}
-            let active=match slot{BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,_=>true};
+            let active=match slot{BADGE=>self.settings.companion_badge,COMPANION=>self.settings.companion_bar,BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,_=>true};
             let c=card.shifted(dx,0.0).faded(if active||is_dragged{1.0}else{0.38}).ghost();
             match slot{
+                BADGE=>self.companion_badge_draw(&c,x,15.0),
+                COMPANION=>{let saved=(self.settings.companion_badge,self.settings.companion_bar);if !saved.0&&!saved.1{self.settings.companion_badge=true;self.settings.companion_bar=true;}self.companion_bar(&c,x,layout.widths[COMPANION]);(self.settings.companion_badge,self.settings.companion_bar)=saved;},
                 BATTERY=>paint::battery(&c,x,15.0,self.resident_power.0,self.resident_power.1,1.0),
-                CLOCK=>{let text=self.settings.clock_text(&chrono::Local::now().format("%H:%M:%S").to_string());paint::clock(&c,x-paint::clock_width(&c,&text,theme::size::PILL_CLOCK)/2.0,21.0,&text,theme::size::PILL_CLOCK);},
+                CLOCK=>{let text=self.settings.clock_text(&chrono::Local::now().format("%H:%M:%S").to_string());let w=paint::clock_width(&c,&text,theme::size::PILL_CLOCK);self.vpn_clock(&c,x-w/2.0,5.0,w,21.0);paint::clock(&c,x-w/2.0,21.0,&text,theme::size::PILL_CLOCK);},
                 PET=>self.pet.draw(&c,x,self.t,self.skin_palette()),
                 MUSIC=>paint::playback_bars(&c,x,15.0,self.t,self.media.playing,theme::WHITE),
                 FOCUS=>crate::focus_bar::draw(&c,x,15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false),
@@ -79,6 +88,7 @@ impl crate::app::App {
             if is_dragged {ui.painter().line_segment([Pos2::new(rect.center().x,body.bottom()+6.0),Pos2::new(rect.center().x,body.bottom()+12.0)],egui::Stroke::new(2.0,theme::BLUE));}
             response.on_hover_text(label(slot));
         }
+        if dragged.is_none() || movement.is_none() && last_target.is_some_and(|(_,slot)|Some(slot)!=hovered_target){ui.ctx().data_mut(|d|d.remove::<(usize,usize)>(drag_key));}
         if let Some(palette)=self.skin_palette() {
             let end=crate::skin_paint::shape_count(ui.ctx(),ui.layer_id());
             crate::skin_paint::recolor_layer(ui.ctx(),ui.layer_id(),&[(content_from,end)],&palette);
@@ -88,6 +98,6 @@ impl crate::app::App {
         }
         ui.painter().text(Pos2::new(stage.center().x,stage.bottom()-22.0),egui::Align2::CENTER_CENTER,"按住图标左右拖动",theme::font(11.0,W::Regular),Color32::from_gray(160));
         ui.add_space(8.0);
-        ui.label(RichText::new("灰色图标为暂未显示的组件；位置会保留。").size(11.0).color(ui.visuals().weak_text_color()));
+        ui.label(RichText::new("徽标与智能体 / 待办可分别拖动；VPN 提示跟随时间。灰色组件的位置也会保留。").size(11.0).color(ui.visuals().weak_text_color()));
     }
 }

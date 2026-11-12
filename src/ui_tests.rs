@@ -542,6 +542,7 @@ fn glass_pill_rim_stays_on_outline_while_collapsing() {
 }
 
 struct H {
+    companion:crate::companion::Snapshot,
     ctx: egui::Context,
     app: App,
     t: f64,
@@ -568,7 +569,7 @@ impl H {
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
-        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
+        Self { companion:Default::default(),ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
@@ -583,6 +584,7 @@ impl H {
         };
         self.app.filter_todo_input(&mut raw);
         let env = Env {
+            companion:self.companion.clone(),
             t: self.t,
             clock: "09:41:00".into(),
             today: "2026-10-28".into(),
@@ -4131,12 +4133,12 @@ fn shelf_remove_icon_stays_centered_on_hover_and_preserves_the_file(){
 
 #[test]
 fn resident_components_can_be_dragged_saved_and_reset(){
-    use crate::bar_layout::{CLOCK,BATTERY};
+    use crate::bar_layout::{CLOCK,BATTERY,BADGE};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     fn draw(h:&mut H,events:Vec<egui::Event>)->[Pos2;2]{
         let mut points=[Pos2::ZERO;2];
         h.t+=0.02;
-        let out=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(600.0,300.0))),time:Some(h.t),events,..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{h.app.resident_order_settings(ui);for (index,slot) in [CLOCK,BATTERY].into_iter().enumerate(){points[index]=ui.ctx().read_response(ui.id().with(("resident-icon",slot))).unwrap().rect.center();}});});
+        let out=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(600.0,300.0))),time:Some(h.t),events,..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|{h.app.resident_order_settings(ui);for (index,slot) in [CLOCK,BADGE].into_iter().enumerate(){points[index]=ui.ctx().read_response(ui.id().with(("resident-icon",slot))).unwrap().rect.center();}});});
         h.shapes=out.shapes;points
     }
     fn point(h:&H,label:&str)->Pos2{h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect().center()),_=>None}).unwrap()}
@@ -5470,7 +5472,7 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
+        let height=match item {crate::side_dock::SideItem::Companion(h)=>h,crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
         y+=height;
     }
     let click=Pos2::new(18.0,y);
@@ -6292,4 +6294,107 @@ fn claude_local_only_settings_show_notice_without_manual_reset_controls(){
         }
         assert!(h.app.quota.gemini_connecting.is_none()&&h.app.quota.workbuddy_connecting.is_none()&&h.app.quota.login.is_none());
     }
+}
+
+#[test]
+fn companion_native_page_opens_details_and_keeps_quota_accessible(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.companion=crate::companion::Snapshot{ready:true,agents:vec![crate::companion::Agent{name:"Codex".into(),state:"tool".into(),process_ids:vec![123],..Default::default()}],..Default::default()};
+    h.quota_accounts(1);h.app.show_page(6);h.hover(H::local(200.0,65.0),1.0);
+    assert!(h.app.companion.panel);h.click_text("Codex");h.hover(H::local(200.0,100.0),0.35);
+    assert_eq!(h.app.companion.selected.as_deref(),Some("Codex"));h.cmds.clear();h.click_text("打开应用");
+    assert!(h.cmds.iter().any(|c|matches!(c,crate::app::Cmd::AgentWindow(ids)if ids==&vec![123])));
+    h.click_text("账户额度");h.hover(H::local(200.0,70.0),0.25);assert!(!h.app.companion.panel);
+    h.click_text("运行状态");h.frame(vec![]);assert!(h.app.companion.panel);assert!(h.app.companion.selected.is_none());
+}
+
+#[test]
+fn companion_resident_space_stays_inside_the_existing_island(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(8);
+    h.companion=crate::companion::Snapshot{ready:true,agents:vec![crate::companion::Agent{name:"Codex".into(),state:"thinking".into(),..Default::default()}],..Default::default()};
+    h.frame(vec![]);let layout=&h.app.resident.target;
+    assert!(layout.width<=WIN_W-32.0);
+    if let Some(x)=layout.x[crate::bar_layout::COMPANION]{let w=layout.widths[crate::bar_layout::COMPANION];assert!(x-w/2.0>=-layout.width/2.0+15.9);}
+}
+
+#[test]
+fn companion_settings_persist_and_hide_disabled_content(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.companion_badge=false;h.app.settings.companion_labels=false;h.app.settings.companion_todos=false;
+    h.app.settings.badge_style=1;h.app.settings.companion_max_icons=2;h.app.settings.companion_done_seconds=7;h.app.settings.unlock_seconds=5;h.app.settings.vpn_tint=false;
+    h.app.settings.resident_order=vec![0,1,2,6,7,9,5];h.app.settings.save();let s=crate::model::Settings::load();
+    assert_eq!(s.badge_style,1);assert!(!s.companion_badge&&!s.companion_labels&&!s.companion_todos&&!s.vpn_tint);
+    assert_eq!((s.companion_max_icons,s.companion_done_seconds,s.unlock_seconds),(2,7,5));assert_eq!(s.resident_order,h.app.settings.resident_order);
+    h.frame(vec![]);assert!(!h.app.companion_slot_enabled());assert!(h.app.resident.target.x[crate::bar_layout::COMPANION].is_none());
+    h.companion.agents=vec![crate::companion::Agent{name:"Codex".into(),state:"thinking".into(),..Default::default()}];h.frame(vec![]);
+    assert!(h.app.companion_slot_enabled());assert!(h.app.companion_width(&h.ctx)<60.0);
+}
+
+#[test]
+fn companion_legacy_order_keeps_all_old_positions(){
+    use crate::bar_layout::*;
+    let old=vec![FOCUS,CLOCK,QUOTA,PET,BATTERY,MUSIC];let full=full_order(&old,true);
+    assert_eq!(&full[..2],&[BADGE,COMPANION]);assert_eq!(&full[2..],&old);assert!(valid_order(&full));
+    let mut layout=Layout::new(true,2,true,true,false,true);layout.add_companion(112.0);
+    let custom=vec![BATTERY,PET,CLOCK,QUOTA,MUSIC,FOCUS,COMPANION];layout.reorder(&custom);
+    assert!(layout.x[COMPANION].unwrap()>layout.x[FOCUS].unwrap());
+}
+#[test]
+fn companion_settings_preview_includes_new_controls(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.open_settings();h.app.settings_tab=10;h.ctx.set_embed_viewports(false);
+    h.app.companion.snapshot.vpn=crate::companion::Vpn{connected:true,delay:Some(84.0),text:"VPN · 84 ms".into()};
+    let captured=std::sync::Arc::new(Mutex::new(None));let capture=captured.clone();
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{let id=viewport.ids.this;let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(760.0,1700.0))),viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),..Default::default()})).collect(),..Default::default()};*capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));});
+    let mut raster=crate::preview_raster::Raster::new(760,1700);
+    for frame in 0..4{h.t+=0.25;let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));let child=captured.lock().unwrap().take().unwrap();
+        raster.update_textures(&root.textures_delta);raster.update_textures(&child.textures_delta);
+        if frame==3{
+            for label in ["显示徽标","智能体状态","状态文字","空闲时显示待办","最多显示图标","完成后停留","VPN 延迟提示","时间胶囊底色","解锁问候","问候停留"]{assert!(child.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==label)),"缺少设置项 {label}");}
+            if let Some(dest)=std::env::var_os("DAOZAI_COMPANION_SETTINGS_PREVIEW"){let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();raster.buf.fill([0.09,0.1,0.12,1.0]);raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);image::save_buffer(dest.join("settings.png"),&rgba,760,1700,image::ColorType::Rgba8).unwrap();}
+        }
+        raster.free_textures(&root.textures_delta);raster.free_textures(&child.textures_delta);
+    }
+}
+
+#[test]
+fn companion_badge_and_status_have_independent_slots(){
+    use crate::bar_layout::*;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.resident_order=vec![COMPANION,CLOCK,BATTERY,PET,QUOTA,MUSIC,FOCUS,BADGE];
+    h.companion=crate::companion::Snapshot{ready:true,agents:vec![crate::companion::Agent{name:"Codex".into(),state:"complete".into(),..Default::default()}],..Default::default()};
+    h.frame(vec![]);let l=&h.app.resident.target;
+    assert!(l.x[COMPANION].unwrap()<l.x[CLOCK].unwrap());assert!(l.x[BADGE].unwrap()>l.x[CLOCK].unwrap());
+    let mut spans:Vec<_>=l.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-l.widths[i]/2.0,x+l.widths[i]/2.0))).collect();spans.sort_by(|a,b|a.0.total_cmp(&b.0));
+    assert!(spans.windows(2).all(|p|p[1].0-p[0].1>=6.9));
+    h.app.settings.companion_bar=false;h.frame(vec![]);assert!(h.app.resident.target.x[COMPANION].is_none());assert!(h.app.resident.target.x[BADGE].is_some());
+    h.app.settings.companion_badge=false;h.frame(vec![]);assert!(h.app.resident.target.x[BADGE].is_none());
+}
+
+#[test]
+fn companion_content_hugs_the_label_and_expands_for_more_agents(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    let agent=|name:&str|crate::companion::Agent{name:name.into(),state:"thinking".into(),..Default::default()};
+    h.companion=crate::companion::Snapshot{ready:true,agents:vec![agent("Codex")],..Default::default()};h.frame(vec![]);
+    let compact=h.app.companion_width(&h.ctx);assert!(compact>45.0&&compact<70.0,"single label reserves no empty block: {compact}");
+    h.companion.agents=vec![agent("Codex"),agent("Claude"),agent("Gemini"),agent("WorkBuddy")];h.frame(vec![]);
+    let expanded=h.app.companion_width(&h.ctx);assert!(expanded>compact+25.0);assert!(expanded<105.0);
+    h.companion.agents=vec![agent("Codex")];h.frame(vec![]);assert!((h.app.companion_width(&h.ctx)-compact).abs()<0.1);
+    h.app.settings.companion_labels=false;assert_eq!(h.app.companion_width(&h.ctx),22.0);
+}
+
+#[test]
+fn island_about_page_credits_original_and_shows_update_source(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.open_settings();h.app.settings_tab=9;h.ctx.set_embed_viewports(false);
+    let captured=std::sync::Arc::new(Mutex::new(None));let capture=captured.clone();
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{let id=viewport.ids.this;let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(760.0,1100.0))),viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),..Default::default()})).collect(),..Default::default()};*capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));});
+    let mut raster=crate::preview_raster::Raster::new(760,1100);
+    for dark in [false,true]{h.app.settings.settings_theme=if dark{crate::settings_theme::SettingsTheme::Dark}else{crate::settings_theme::SettingsTheme::Light};
+    for frame in 0..4{let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));let child=captured.lock().unwrap().take().unwrap();raster.update_textures(&root.textures_delta);raster.update_textures(&child.textures_delta);
+        if frame==3{
+            for label in ["Windows Island","软件更新","检查更新","Snowflake006 / Windows-Island","致敬原创","原创作者 · Renly1994"]{assert!(child.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==label)),"缺少关于信息 {label}");}
+            assert!(!child.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("请喝咖啡"))));
+            if let Some(dest)=std::env::var_os("ISLAND_ABOUT_PREVIEW"){let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();raster.buf.fill([0.09,0.1,0.12,1.0]);raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);image::save_buffer(dest.join(format!("about-{}.png",if dark{"dark"}else{"light"})),&rgba,760,1100,image::ColorType::Rgba8).unwrap();}
+        }
+        raster.free_textures(&root.textures_delta);raster.free_textures(&child.textures_delta);
+    }}
 }

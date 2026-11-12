@@ -68,3 +68,7 @@ mod ui_tests;
 #[cfg(test)]
 #[path = "bin/daozai-record/raster.rs"]
 mod preview_raster;
+
+pub mod companion;
+
+mod about;

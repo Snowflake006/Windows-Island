@@ -2,10 +2,10 @@
 use eframe::egui;
 use std::{io::{Read, Write}, path::PathBuf, sync::{mpsc::{self, Receiver}, Arc, atomic::{AtomicBool, Ordering}}, time::Duration};
 
-const REPOSITORY: &str = "https://github.com/Renly1994/xiaotang-daozai";
-const API: &str = "https://api.github.com/repos/Renly1994/xiaotang-daozai/releases/latest";
-const RELEASES: &str = "https://github.com/Renly1994/xiaotang-daozai/releases/latest";
-const BACKUP_DOWNLOAD: &str = "https://pan.quark.cn/s/0a39b4e1f332";
+const REPOSITORY: &str = "https://github.com/Snowflake006/Windows-Island";
+const API: &str = "https://api.github.com/repos/Snowflake006/Windows-Island/releases/latest";
+const RELEASES: &str = "https://github.com/Snowflake006/Windows-Island/releases/latest";
+const BACKUP_DOWNLOAD: &str = RELEASES;
 
 #[derive(Clone, Debug)]
 struct Release { version: String, notes: String, page: String, package: Option<Package> }
@@ -109,7 +109,7 @@ impl State {
         }).id();
         let installing = self.rx.is_some() && self.cancel.is_none();
         ctx.show_viewport_immediate(egui::ViewportId::from_hash_of("daozai-update"),
-            egui::ViewportBuilder::default().with_title("岛仔更新").with_icon(theme::app_icon())
+            egui::ViewportBuilder::default().with_title("Windows Island更新").with_icon(theme::app_icon())
                 .with_inner_size([520.0, 416.0]).with_resizable(false).with_decorations(false)
                 .with_transparent(true).with_active(true), |ctx, _| {
                 if focus {
@@ -151,7 +151,7 @@ impl State {
                             ui.image((logo,egui::vec2(52.0,52.0)));
                             ui.add_space(4.0);
                             ui.vertical(|ui| {
-                                ui.label(egui::RichText::new("岛仔有新版本了").font(theme::font(21.0,W::Semibold)));
+                                ui.label(egui::RichText::new("Windows Island有新版本了").font(theme::font(21.0,W::Semibold)));
                                 ui.horizontal(|ui| {
                                     ui.label(egui::RichText::new(option_env!("DAOZAI_BUILD_LABEL").unwrap_or(env!("CARGO_PKG_VERSION"))).color(theme::DIM));
                                     ui.label(egui::RichText::new("→").color(theme::DIM));
@@ -193,7 +193,7 @@ impl State {
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 if ui.add_enabled(!installing,egui::Button::new("稍后").fill(theme::BTN).min_size(egui::vec2(110.0,40.0))).clicked() { self.dismiss(); }
-                                let install = egui::Button::new(egui::RichText::new(if installing{"正在准备重启…"}else{"下载并安装"}).color(theme::WHITE))
+                                let install = egui::Button::new(egui::RichText::new(if installing{"正在准备重启…"}else{"立即更新"}).color(theme::WHITE))
                                     .fill(theme::BLUE).min_size(egui::vec2(ui.available_width(),40.0));
                                 if ui.add_enabled(release.package.is_some() && self.rx.is_none(),install).clicked() {
                                     let (tx,rx)=mpsc::channel(); self.rx=Some(rx);
@@ -209,7 +209,7 @@ impl State {
                         }
                         ui.add_space(2.0);
                         ui.horizontal(|ui| {
-                            ui.hyperlink_to(egui::RichText::new("网盘下载").size(11.5).color(theme::BLUE),BACKUP_DOWNLOAD);
+                            ui.hyperlink_to(egui::RichText::new("发布页下载").size(11.5).color(theme::BLUE),BACKUP_DOWNLOAD);
                             ui.label(egui::RichText::new("·").color(theme::DIM));
                             ui.hyperlink_to(egui::RichText::new("浏览器下载").size(11.5).color(theme::GRAY),&release.page);
                             ui.label(egui::RichText::new("·").color(theme::DIM));
@@ -225,9 +225,9 @@ impl State {
 }
 
 // Windows 的 GL 透明窗口可能仍显示黑底，按绘制轮廓裁掉窗口外沿。
-/// 只统计岛仔自己的文件（KB）。共享安装文件夹里的其他软件不算在内。
+/// 只统计Windows Island自己的文件（KB）。共享安装文件夹里的其他软件不算在内。
 fn own_files_kb(dir: &std::path::Path) -> u32 {
-    let bytes: u64 = ["daozai.exe", "Uninstall.exe", "LICENSE", "THIRD_PARTY_NOTICES.txt"].iter()
+    let bytes: u64 = ["Windows Island.exe", "daozai.exe", "Uninstall.exe", "LICENSE", "THIRD_PARTY_NOTICES.txt"].iter()
         .filter_map(|name| std::fs::metadata(dir.join(name)).ok()).filter(|meta| meta.is_file()).map(|meta| meta.len()).sum();
     bytes.div_ceil(1024).min(u64::from(u32::MAX)) as u32
 }
@@ -257,7 +257,7 @@ fn clip_update_window(rect: egui::Rect, scale: f32) {
     unsafe extern "system" fn visit(hwnd: HWND, data: LPARAM) -> BOOL {
         let mut title = [0u16; 64];
         let len = GetWindowTextW(hwnd, &mut title) as usize;
-        if String::from_utf16_lossy(&title[..len]) != "岛仔更新" { return BOOL(1); }
+        if String::from_utf16_lossy(&title[..len]) != "Windows Island更新" { return BOOL(1); }
         let &(rect, scale) = &*(data.0 as *const (egui::Rect, f32));
         let region = update_window_region(rect, scale);
         let old = CreateRectRgn(0, 0, 0, 0);
@@ -300,7 +300,7 @@ fn http_agent() -> Result<ureq::Agent, String> {
 
 fn check() -> Result<Option<Release>, String> {
     let response = http_agent()?
-        .get(API).set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
+        .get(API).set("User-Agent", concat!("Windows-Island/", env!("CARGO_PKG_VERSION")))
         .set("Accept", "application/vnd.github+json").call().map_err(|error| match error {
             ureq::Error::Status(403 | 429, _) => "检查过于频繁，请稍后重试".to_owned(),
             ureq::Error::Status(404, _) => "暂未找到正式版本，请查看发布页".to_owned(),
@@ -313,7 +313,7 @@ fn check() -> Result<Option<Release>, String> {
 
 fn release_info(value: &serde_json::Value, current: &str) -> Result<Option<Release>, String> {
     let Some(tag) = parse_release(value, current)? else { return Ok(None); };
-    let name = format!("Daozai-v{}-windows-x64.zip", tag.trim_start_matches('v'));
+    let name = format!("Windows-Island-v{}-windows-x64.zip", tag.trim_start_matches('v'));
     let expected = format!("{REPOSITORY}/releases/download/{tag}/{name}");
     let package = value["assets"].as_array().and_then(|assets| assets.iter().find(|asset| asset["name"] == name))
         .and_then(|asset| {
@@ -334,7 +334,7 @@ fn download(release: &Release, tx: &mpsc::Sender<Event>, cancel: &AtomicBool) ->
     std::fs::create_dir_all(&work).map_err(|_| "无法创建更新缓存")?;
     let result = (|| {
         let response = http_agent()?
-            .get(&package.url).call().map_err(|_| "连接下载服务器失败，请检查网络或代理，或使用网盘下载")?;
+            .get(&package.url).call().map_err(|_| "连接下载服务器失败，请检查网络或代理，或使用发布页下载")?;
         if !response.get_url().starts_with("https://") { return Err("更新下载未使用安全连接".into()); }
         let mut input = response.into_reader();
         let mut output = std::fs::File::create(work.join("update.zip")).map_err(|_| "无法保存更新包")?;
@@ -354,7 +354,7 @@ fn transfer(input: &mut impl Read, output: &mut impl Write, package: &Package, c
     let mut buffer = [0u8; 65536]; let mut total = 0u64;
     loop {
         if cancel.load(Ordering::Relaxed) { return Err("下载已取消".into()); }
-        let length = input.read(&mut buffer).map_err(|_| "下载中断或等待超时，请重试或使用网盘下载")?;
+        let length = input.read(&mut buffer).map_err(|_| "下载中断或等待超时，请重试或使用发布页下载")?;
         if length == 0 { break; }
         total += length as u64;
         if total > package.size { return Err("更新包大小不符，请重新下载".into()); }
@@ -504,8 +504,8 @@ mod tests {
     fn only_matching_verified_windows_package_can_install() {
         let mut value = release("v0.6.40");
         value["body"] = "更新说明".into();
-        value["assets"] = serde_json::json!([{"name":"Daozai-v0.6.40-windows-x64.zip",
-            "browser_download_url":format!("{REPOSITORY}/releases/download/v0.6.40/Daozai-v0.6.40-windows-x64.zip"),
+        value["assets"] = serde_json::json!([{"name":"Windows-Island-v0.6.40-windows-x64.zip",
+            "browser_download_url":format!("{REPOSITORY}/releases/download/v0.6.40/Windows-Island-v0.6.40-windows-x64.zip"),
             "size":123,"digest":format!("sha256:{}", "a".repeat(64))}]);
         let parsed = release_info(&value, "0.6.39").unwrap().unwrap();
         assert!(parsed.package.is_some()); assert_eq!(parsed.notes, "更新说明");
@@ -598,7 +598,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = crate::app::App::new(&ctx, Default::default());
         app.updates.result = Some(Ok(Some(Release { version: "v0.6.63".into(),
-            notes: "- 更新下载支持 Windows 系统代理\n- 连接失败及时提示，避免长时间停在 0%\n- 新增网盘下载入口".into(), page: RELEASES.into(),
+            notes: "- 更新下载支持 Windows 系统代理\n- 连接失败及时提示，避免长时间停在 0%\n- 新增发布页下载入口".into(), page: RELEASES.into(),
             package: Some(Package { url: String::new(), size: 100, hash: String::new() }) })));
         app.updates.dialog_open = true;
         app.settings_tab = 9;
@@ -622,7 +622,7 @@ mod tests {
             ("update-dialog", None, ""),
             ("update-connecting", Some(0.0), ""),
             ("update-downloading", Some(0.42), ""),
-            ("update-failed", None, "连接下载服务器失败，请检查网络或代理，或使用网盘下载"),
+            ("update-failed", None, "连接下载服务器失败，请检查网络或代理，或使用发布页下载"),
         ] {
         app.updates.cancel = progress.map(|_| Arc::new(AtomicBool::new(false)));
         app.updates.progress = progress.unwrap_or_default();
@@ -665,4 +665,14 @@ fn update_window_region_excludes_black_corners() {
             let _ = DeleteObject(region);
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+#[ignore="发布后验证 GitHub 正式版及更新下载"]
+fn island_live_release_download(){
+    let value:serde_json::Value=serde_json::from_reader(http_agent().unwrap().get(API).set("User-Agent","Windows-Island-Release-Verification").call().unwrap().into_reader()).unwrap();
+    let release=release_info(&value,"0.9.0").unwrap().expect("正式版应可升级");assert!(release.package.is_some(),"发布包必须有可信 URL、大小和 SHA256");
+    let (tx,_)=mpsc::channel();let work=download(&release,&tx,&AtomicBool::new(false)).unwrap();
+    assert!(work.join("update.zip").exists());println!("Verified update package: {}",work.display());
 }

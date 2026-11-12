@@ -7,15 +7,25 @@ pub(crate) const QUOTA: usize = 2;
 pub(crate) fn quota_slot(position:usize)->usize {
     if position<3 {QUOTA+position} else {WIDTHS.len()+position-3}
 }
+pub(crate) const COMPANION: usize = 5;
 pub(crate) const MUSIC: usize = 6;
 pub(crate) const FOCUS: usize = 7;
 pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
-const WIDTHS: [f32; 10] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0];
+pub(crate) const BADGE: usize = 10;
+const WIDTHS: [f32; 11] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0,22.0];
 
 pub(crate) const DEFAULT_ORDER: [usize;6]=[BATTERY,PET,CLOCK,QUOTA,MUSIC,FOCUS];
 pub(crate) fn valid_order(order:&[usize])->bool {
-    order.len()==6 && DEFAULT_ORDER.iter().all(|slot|order.iter().filter(|value|*value==slot).count()==1)
+    (6..=8).contains(&order.len()) && DEFAULT_ORDER.iter().all(|slot|order.iter().filter(|value|*value==slot).count()==1)
+        && (order.len()==6 || order.iter().filter(|&&slot|slot==COMPANION).count()==1)
+        && (order.len()<8 || order.iter().filter(|&&slot|slot==BADGE).count()==1)
+}
+pub(crate) fn full_order(order:&[usize],battery:bool)->Vec<usize>{
+    let mut result=if valid_order(order){order.to_vec()}else if battery{DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,BATTERY,MUSIC,FOCUS]};
+    if !result.contains(&COMPANION){result.insert(0,COMPANION);}
+    if !result.contains(&BADGE){let index=result.iter().position(|&s|s==COMPANION).unwrap_or(0);result.insert(index,BADGE);}
+    result
 }
 
 pub(crate) fn animations_enabled()->bool {
@@ -68,6 +78,14 @@ impl Layout {
         for value in x.iter_mut().flatten() {*value-=width/2.0;}
         Self {width:width.max(96.0),x,widths,quotas}
     }
+    pub fn add_badge(&mut self){self.add_component(BADGE,18.0);}
+    pub fn add_companion(&mut self,width:f32) {self.add_component(COMPANION,width);}
+    fn add_component(&mut self,slot:usize,width:f32) {
+        let extra=width+12.0;
+        for x in self.x.iter_mut().flatten(){*x+=extra/2.0;}
+        self.x[slot]=Some(-self.width/2.0-extra/2.0+16.0+width/2.0);
+        self.widths[slot]=width;self.width+=extra;
+    }
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
     pub fn balance_tail(&mut self,position:usize,extra:f32){
         let slot=quota_slot(position);
@@ -85,7 +103,7 @@ impl Layout {
     pub fn reorder(&mut self,order:&[usize]) {
         if !valid_order(order){return;}
         let original=self.x.clone();let mut cursor=-self.width/2.0+16.0;
-        for slot in order.iter().copied().chain(std::iter::once(BELL)) {
+        for slot in full_order(order,true).into_iter().chain(std::iter::once(BELL)) {
             let slots:Vec<usize>=if slot==QUOTA{self.quota_slots().collect()}else{vec![slot]};
             let left=slots.iter().filter_map(|&i|original[i].map(|x|x-self.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
             let right=slots.iter().filter_map(|&i|original[i].map(|x|x+self.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);

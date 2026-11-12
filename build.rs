@@ -36,6 +36,18 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    if env::var("CARGO_CFG_TARGET_ENV").as_deref()==Ok("gnu") {
+        let out=PathBuf::from(env::var("OUT_DIR").unwrap()).join("daozai-icon.o");
+        if Command::new("windres.exe").args(["app.rc","-O","coff","-o"]).arg(&out).status().map(|s|s.success()).unwrap_or(false){println!("cargo:rustc-link-arg={}",out.display());}
+        // MinGW distributions do not always ship the Windows SQLite import library.
+        // Import only the three system entry points used by qq_toast_source.
+        let dir=PathBuf::from(env::var("OUT_DIR").unwrap());
+        let def=dir.join("winsqlite3.def");
+        fs::write(&def,"LIBRARY winsqlite3.dll\nEXPORTS\nsqlite3_open_v2\nsqlite3_exec\nsqlite3_close\n").unwrap();
+        let status=Command::new("dlltool.exe").arg("-d").arg(&def).arg("-l").arg(dir.join("libwinsqlite3.a")).status();
+        if status.map(|s|s.success()).unwrap_or(false){println!("cargo:rustc-link-search=native={}",dir.display());}
+        return;
+    }
     let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("daozai.res");
     let Some(rc) = find_rc() else {
         println!("cargo:warning=rc.exe 未找到，跳过图标资源");

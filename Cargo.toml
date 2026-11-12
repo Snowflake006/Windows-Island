@@ -1,10 +1,10 @@
 [package]
 name = "daozai"
-version = "0.6.63"
+version = "1.0.0"
 edition = "2021"
 license = "MIT"
-description = "岛仔：Windows 顶部的桌面伙伴与信息岛"
-repository = "https://github.com/Renly1994/xiaotang-daozai"
+description = "Windows Island：桌面状态与效率助手"
+repository = "https://github.com/Snowflake006/Windows-Island"
 default-run = "daozai"
 
 [lib]
@@ -29,6 +29,7 @@ imap = { path = "vendor/imap" }
 imap-proto = { path = "vendor/imap-proto" }
 eframe = { path = "vendor/eframe" }
 egui = { path = "vendor/egui" }
+ureq = { path = "vendor/ureq" }
 
 [dependencies]
 eframe = { version = "0.31", default-features = false, features = ["glow", "wgpu", "default_fonts"] }

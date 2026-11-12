@@ -434,6 +434,7 @@ fn main() {
         media.tick(t);
         let total = 14 * 3600 + 20 * 60 + t as u64;
         let env = Env {
+            companion: Default::default(), unlock_version: 0,
             t,
             clock: format!("{:02}:{:02}", total / 3600, total / 60 % 60),
             today: "2026-10-28".into(),

@@ -49,7 +49,7 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 8] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "AI 额度", "日程"];
+pub(crate) const PAGE_NAMES: [&str; 8] = ["音乐", "专注", "饮水", "置物架", "待办", "邮箱", "智能体", "日程"];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -82,6 +82,8 @@ impl Default for Options {
 /// 每帧由外壳提供的外部世界。
 #[derive(Clone, Default)]
 pub struct Env {
+    pub companion: crate::companion::Snapshot,
+    pub unlock_version: u64,
     pub t: f64,
     /// `HH:MM:SS`
     pub clock: String,
@@ -147,6 +149,7 @@ fn unread_step(_horizontal: bool) -> f32 { 22.0 }
 /// 交给外壳执行的副作用。
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
+    AgentWindow(Vec<u32>),
     Media(Transport),
     Open(PathBuf),
     ViewMessenger(Unread),
@@ -584,6 +587,7 @@ impl CalendarState {
 }
 
 pub struct App {
+    pub(crate) companion: crate::companion::State,
     pub opts: Options,
     pub settings: model::Settings,
     pub(crate) todos: model::TodoList,
@@ -829,6 +833,7 @@ impl App {
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             calendar: CalendarState::load(),
+            companion: crate::companion::State::new(),
             quota: crate::quota_ui::State::load(),
             updates: Default::default(),
             resident: Default::default(), resident_power:(None,false),
@@ -1386,7 +1391,7 @@ impl App {
     }
 
     fn island_lyrics_active(&self)->bool {
-        if self.side() {return false;}
+        if self.side() || self.companion.greeting(self.t) || self.settings.companion_bar && self.companion.visible.iter().any(|a|a.busy()) {return false;}
         self.settings.island_lyrics && self.settings.visible_pages[0] && self.media.is_music()
             && !self.browser_minimal_active
     }
@@ -1439,7 +1444,7 @@ impl App {
         self.island_lyric_layout=Some(galley);
     }
 
-    pub(crate) fn effective_minimal(&self)->bool {self.settings.minimal || self.browser_minimal_active}
+    pub(crate) fn effective_minimal(&self)->bool {(self.settings.minimal || self.browser_minimal_active) && !(self.settings.companion_bar && self.companion.greeting(self.t))}
     pub(crate) fn pet_enabled(&self)->bool {self.settings.pet && !self.effective_minimal() && !self.side()}
     pub(crate) fn pet_space(&self)->f32 {if self.pet_enabled(){44.0}else{0.0}}
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
@@ -1483,7 +1488,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==6{203.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1527,6 +1532,7 @@ impl App {
         let mut cmds = Vec::new();
 
         self.tick(env, dt, elapsed);
+        self.companion_step(env);
         self.sync_device(env);
         self.tick_alerts();
         let hud_active=self.notice.clone();
@@ -1541,8 +1547,12 @@ impl App {
         let bell=self.t<self.notification_bell_until&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled());
-        layout.reorder(&self.settings.resident_order);
-        for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
+        let balances=self.quota_balance_layout(&ctx);
+        let reserve=balances.iter().map(|(_,extra)|extra).sum::<f32>()+if self.settings.clock_period!=0{40.0}else{0.0};
+        if self.settings.companion_badge {layout.add_badge();}
+        if self.companion_slot_enabled() {let available=WIN_W-32.0-layout.width-12.0-reserve;if available>=16.0{layout.add_companion(self.companion_width(&ctx).min(available));}}
+        layout.reorder(&bar::full_order(&self.settings.resident_order,self.settings.show_battery));
+        for (position,extra) in balances{layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
@@ -1865,7 +1875,7 @@ impl App {
             shapes.extend(tooltips.iter().map(|r|GlassShape::Round(rel(*r),6.0)));
             shapes
         });
-        let transitioning = !self.w.settled(PW)
+        let transitioning = self.companion.greeting(self.t) || !self.w.settled(PW)
             || !self.h.settled(self.expanded_height())
             || self.page_e() < 0.7
             || self.dots.iter().any(|d| !d.settled(16.0))
@@ -2313,9 +2323,11 @@ impl App {
         let a_pill = (1.0 - smoothstep(0.25, 0.6, m)) * layout.clearance(bar::CLOCK);
         let a_head = smoothstep(0.35, 0.75, m);
         if a_pill > 0.0 {
+            self.vpn_clock(&base.faded(a_pill),cpos.0,5.0,paint::clock_width(base,&clock,size::PILL_CLOCK),21.0);
             paint::clock(&base.faded(a_pill),cpos.0,cpos.1,&clock,size::PILL_CLOCK);
         }
         if a_head > 0.0 {
+            self.vpn_clock(&base.faded(a_head),cpos.0,9.0,clock_w,19.0);
             paint::clock(&base.faded(a_head),cpos.0,cpos.1-0.5,&clock,size::CLOCK);
         }
         // 日期随内容淡入，从药丸方向轻轻滑出
@@ -2326,6 +2338,8 @@ impl App {
             paint::playback_bars(base,lerp(local_cx+layout.x[bar::MUSIC].unwrap_or(0.0),367.0,m),lerp(15.0,18.0,m),self.t,self.media.playing,theme::WHITE);
         }
         let compact_alpha=1.0-smoothstep(0.0,0.22,p);
+        if compact_alpha>0.004 {if let Some(x)=layout.x[bar::BADGE]{self.companion_badge_draw(&base.faded(compact_alpha),local_cx+x,15.0);}}
+        if compact_alpha>0.004 {if let Some(x)=layout.x[bar::COMPANION]{self.companion_bar(&base.faded(compact_alpha),local_cx+x,layout.widths[bar::COMPANION]);}}
         if self.t<self.notification_bell_until&&!self.compact_notices()&&p<0.1 {
             if let Some(x)=layout.x[bar::BELL]{
                 let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
@@ -2428,8 +2442,9 @@ impl App {
             3 => return,
             4 => ("待办", "清单", theme::GREEN),
             5 => ("邮箱", "", theme::CYAN),
+            6 if self.companion.panel => ("智能", "体", theme::BLUE),
             6 => ("AI", "额度", theme::SOFT_GREEN),
-            _ => ("岛仔", "设置", theme::WHITE),
+            _ => ("Windows", "Island", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
         if !b.is_empty() {
@@ -2485,7 +2500,7 @@ impl App {
             3 => self.page_shelf(c, env, cmds),
             4 => self.page_todo(c, env, cmds),
             5 => self.page_mail(c, env, cmds),
-            6 => self.page_quota(c),
+            6 => self.page_companion(c,cmds),
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }

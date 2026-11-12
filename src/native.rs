@@ -212,6 +212,7 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    if msg==0x02B1 && wp.0==8 { UNLOCK_VERSION.fetch_add(1,std::sync::atomic::Ordering::Relaxed); }
     if matches!(msg,WM_DWMCOMPOSITIONCHANGED|WM_DISPLAYCHANGE|WM_DWMCOLORIZATIONCOLORCHANGED)
         || (msg==WM_SHOWWINDOW && wp.0!=0) {
         // 隐藏创建到首次显示、隐藏后恢复时也要恢复透明；等框架处理完窗口状态再应用。
@@ -353,6 +354,7 @@ impl Window {
             apply_style(hwnd, false, false);
             let _=enable_alpha_composition(hwnd);
             let _ = SetWindowSubclass(hwnd, Some(subclass), SUBCLASS_ID, 0);
+            let _=WTSRegisterSessionNotification(hwnd.0,0);
             SetWinEventHook(
                 EVENT_SYSTEM_FOREGROUND,
                 EVENT_SYSTEM_FOREGROUND,
@@ -519,6 +521,7 @@ impl Window {
 impl Drop for Window {
     fn drop(&mut self) {
         unsafe {
+            let _=WTSUnRegisterSessionNotification(self.hwnd.0);
             let _ = RemoveWindowSubclass(self.hwnd, Some(subclass), SUBCLASS_ID);
             if !self.hook.is_invalid() {
                 let _ = UnhookWinEvent(self.hook);
@@ -770,4 +773,26 @@ mod tests {
             assert_eq!(SendMessageW(window.0, WM_MOUSEACTIVATE, WPARAM(0), click).0, MA_ACTIVATE as isize);
         }
     }
+}
+
+static UNLOCK_VERSION:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+pub fn unlock_version()->u64 {UNLOCK_VERSION.load(std::sync::atomic::Ordering::Relaxed)}
+#[link(name="wtsapi32")]
+extern "system" {
+    fn WTSRegisterSessionNotification(hwnd:*mut std::ffi::c_void,flags:u32)->i32;
+    fn WTSUnRegisterSessionNotification(hwnd:*mut std::ffi::c_void)->i32;
+}
+pub fn open_agent(ids:&[u32])->bool {
+    unsafe extern "system" fn find(hwnd:HWND,param:LPARAM)->windows::Win32::Foundation::BOOL {
+        let data=&mut *(param.0 as *mut (Vec<u32>,Option<HWND>));
+        let mut pid=0;GetWindowThreadProcessId(hwnd,Some(&mut pid));
+        if data.0.contains(&pid) && GetWindow(hwnd,GW_OWNER).map(|h|h.0.is_null()).unwrap_or(true) && GetWindowLongPtrW(hwnd,GWL_EXSTYLE)&WS_EX_TOOLWINDOW.0 as isize==0 {
+            let mut rect=RECT::default();let _=GetWindowRect(hwnd,&mut rect);
+            if rect.right-rect.left>=200 && rect.bottom-rect.top>=150 {data.1=Some(hwnd);return false.into();}
+        }
+        true.into()
+    }
+    let mut data:(Vec<u32>,Option<HWND>)=(ids.to_vec(),None);
+    unsafe {let _=EnumWindows(Some(find),LPARAM(&mut data as *mut _ as isize));if let Some(hwnd)=data.1{let _=ShowWindow(hwnd,SW_RESTORE);return SetForegroundWindow(hwnd).as_bool();}}
+    false
 }

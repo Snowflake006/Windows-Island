@@ -32,7 +32,7 @@ try {
         $archive = Join-Path $work 'update.zip'
         $zip = [IO.Compression.ZipFile]::Open($archive, [IO.Compression.ZipArchiveMode]::Create)
         $version = if ($case -eq 'wrong-version') {'9.8.8'} else {'9.8.7'}
-        $entry = if ($case -eq 'traversal') {'../daozai.exe'} else {"Daozai-v$version-windows-x64/daozai.exe"}
+        $entry = if ($case -eq 'traversal') {'../daozai.exe'} else {"Windows-Island-v$version-windows-x64/Windows Island.exe"}
         [IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $fixture, $entry) | Out-Null
         $zip.Dispose()
         Set-Content -LiteralPath (Join-Path $work 'version.txt') -Value $version

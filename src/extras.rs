@@ -1,4 +1,4 @@
-//! 设置、通知队列与岛仔表情。
+//! 设置、通知队列与Windows Island表情。
 use crate::settings_theme::color as settings_color;
 use crate::app::{App, Cmd, Phase, HUD_TRACK_W, HUD_TRACK_X, HUD_W, PAGE_NAMES};
 use crate::paint::{Card, H};
@@ -295,7 +295,7 @@ impl App {
     }
     pub fn receive_notification(&mut self, app:String, id:String, body:String){
         if !self.settings.read_notifications || id.is_empty() || (self.settings.qq_only && id!="QQ"){return;}
-        // 岛仔自己发出的系统提醒会被通知中心回传；已在历史里的同一内容不再入队，避免重复显示。
+        // Windows Island自己发出的系统提醒会被通知中心回传；已在历史里的同一内容不再入队，避免重复显示。
         if self.history.iter().any(|a|format!("{} · {}",a.title,a.body)==body){return;}
         if !self.notification_apps.observe(&id,&app) || !self.settings.notifications{return;}
         if id=="QQ"{self.mark_messenger(crate::app::Messenger::Qq,0,0);}
@@ -812,7 +812,7 @@ impl App {
             0=>{
                 let choices=[("吉祥物",self.settings.pet),("极简刘海",self.settings.minimal),("系统提示",self.settings.system_hud),("全屏隐藏",self.settings.hide_fullscreen)];
                 for (i,(name,on)) in choices.iter().enumerate(){let x=42.0+(i%2) as f32*169.0;let y=57.0+(i/2) as f32*27.0;let text=format!("{}  {}",name,if *on{"开"}else{"关"});if setting_button(c,x,y,158.0,&text,*on,&format!("general-{i}")){match i{0=>self.set_pet(!self.settings.pet),1=>self.set_minimal(!self.settings.minimal),2=>self.settings.system_hud=!self.settings.system_hud,_=>self.settings.hide_fullscreen=!self.settings.hide_fullscreen}}}
-                c.text(42.0,116.0,"岛仔收起时常驻；极简模式保留细线",10.5,W::Regular,theme::GRAY,H::Left);
+                c.text(42.0,116.0,"Windows Island收起时常驻；极简模式保留细线",10.5,W::Regular,theme::GRAY,H::Left);
             }
             1=>{
                 let rows=[("每次",format!("{} ml",self.settings.serving_ml)),("间隔",format!("{} 分",self.settings.water_minutes)),("目标",format!("{:.1} L",self.water.goal_ml as f32/1000.0))];
@@ -966,9 +966,9 @@ fn support_author(ui:&mut egui::Ui){
             });
         });
     ui.add_space(9.0);
-    ui.label(egui::RichText::new("小唐维护 · 岛仔陪伴").size(10.5).color(accent));
+    ui.label(egui::RichText::new("小唐维护 · Windows Island陪伴").size(10.5).color(accent));
     ui.label(egui::RichText::new("请小唐喝杯咖啡").size(19.0).strong());
-    ui.label("岛仔陪你认真生活，\n你的支持，陪小唐把它慢慢做好。");
+    ui.label("Windows Island陪你认真生活，\n你的支持，陪小唐把它慢慢做好。");
     } else {
         let ctx=ui.ctx().clone();
         // 只解码一次并裁出二维码区域，按实际显示像素缩小：原图解码后两张合计约 17MB，缩小后不到 1MB。
@@ -1061,7 +1061,7 @@ impl App {
         if !self.settings_open{return;}
         let id=egui::ViewportId::from_hash_of("daozai-settings");
         let focus_requested=std::mem::take(&mut self.settings_focus_requested);
-        ctx.show_viewport_immediate(id,egui::ViewportBuilder::default().with_title("岛仔设置").with_icon(theme::app_icon()).with_inner_size([690.0,560.0]).with_min_inner_size([600.0,450.0]).with_visible(false).with_active(false).with_window_level(egui::WindowLevel::Normal),|ctx,_|{
+        ctx.show_viewport_immediate(id,egui::ViewportBuilder::default().with_title("Windows Island 设置").with_icon(theme::app_icon()).with_inner_size([690.0,560.0]).with_min_inner_size([600.0,450.0]).with_visible(false).with_active(false).with_window_level(egui::WindowLevel::Normal),|ctx,_|{
             let dark=self.settings.settings_theme.dark(crate::settings_theme::system_dark(ctx));
             let original_style=ctx.style();
             let mut style=(*original_style).clone();
@@ -1164,6 +1164,26 @@ impl App {
                             ui.separator();
                             setting_row(ui,"岛上歌词","收起时显示歌词，无歌词时显示封面和歌名",&mut self.settings.island_lyrics);
                         });
+                        settings_label(ui,"徽标与智能体");
+                        settings_card(ui,|ui|{
+                            setting_row(ui,"显示徽标","点击徽标打开智能体运行状态",&mut self.settings.companion_badge);
+                            settings_control_row_right(ui,"徽标样式",|ui|{ui.selectable_value(&mut self.settings.badge_style,0,"Windows 蓝色徽标");ui.selectable_value(&mut self.settings.badge_style,1,"中国传媒大学校徽");});
+                            setting_row(ui,"智能体状态","收起时显示品牌图标和工作状态灯",&mut self.settings.companion_bar);
+                            ui.add_enabled_ui(self.settings.companion_bar,|ui|{
+                                setting_row(ui,"状态文字","单个智能体时显示思考中、已完成等文字",&mut self.settings.companion_labels);
+                                setting_row(ui,"空闲时显示待办","没有工作中的后台智能体时，轮播今日待办",&mut self.settings.companion_todos);
+                                settings_control_row_right(ui,"最多显示图标",|ui|{ui.add(egui::Slider::new(&mut self.settings.companion_max_icons,1..=6).suffix(" 个"));});
+                                settings_control_row_right(ui,"完成后停留",|ui|{ui.add(egui::Slider::new(&mut self.settings.companion_done_seconds,1..=10).suffix(" 秒"));});
+                            });
+                        });
+                        settings_label(ui,"连接与解锁");
+                        settings_card(ui,|ui|{
+                            setting_row(ui,"VPN 延迟提示","VPN 连接时显示彩色时间胶囊：蓝色流畅、橙色偏慢、红色高延迟",&mut self.settings.vpn_clock);
+                            ui.add_enabled_ui(self.settings.vpn_clock,|ui|{setting_row(ui,"时间胶囊底色","开启后以明亮整块胶囊显示 VPN 状态，关闭后恢复普通时间",&mut self.settings.vpn_tint);});
+                            ui.separator();
+                            setting_row(ui,"解锁问候","在岛内播放蓝色解锁提示和面容动画",&mut self.settings.unlock_feedback);
+                            ui.add_enabled_ui(self.settings.unlock_feedback,|ui|{settings_control_row_right(ui,"问候停留",|ui|{ui.add(egui::Slider::new(&mut self.settings.unlock_seconds,1..=8).suffix(" 秒"));});});
+                        });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
                             let descriptions=["播放控制与同步歌词","番茄钟与休息计时","饮水记录与提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程"];
@@ -1218,7 +1238,7 @@ impl App {
                         settings_label(ui,"启动");
                         settings_card(ui,|ui|{
                             let mut a=autostart;
-                            setting_row(ui,"开机启动","登录 Windows 时自动打开岛仔",&mut a);
+                            setting_row(ui,"开机启动","登录 Windows 时自动打开Windows Island",&mut a);
                             if a!=autostart{self.pending.push(Cmd::ToggleAutostart);}
                         });
                         settings_label(ui,"岛体外观");
@@ -1298,7 +1318,7 @@ impl App {
                             ui.separator();
 
                             let mut pet=self.settings.pet;
-                            setting_row(ui,"岛仔吉祥物","收起时常驻，播放音乐时一起唱歌",&mut pet);
+                            setting_row(ui,"Windows Island吉祥物","收起时常驻，播放音乐时一起唱歌",&mut pet);
                             if pet!=self.settings.pet {self.set_pet(pet);}
                         });
                         self.avoidance.settings(ui,&mut self.settings);
@@ -1436,7 +1456,7 @@ impl App {
                             ui.separator();
                             let sync_before=self.settings.mail_sync_operations;
                             ui.add_enabled_ui(self.mail.manage.pending.is_empty(),|ui|{
-                                setting_row(ui,"同步邮件操作到邮箱","开启后同步已读、删除和恢复；关闭时仅整理岛仔中的记录",&mut self.settings.mail_sync_operations);
+                                setting_row(ui,"同步邮件操作到邮箱","开启后同步已读、删除和恢复；关闭时仅整理Windows Island中的记录",&mut self.settings.mail_sync_operations);
                             });
                             if sync_before!=self.settings.mail_sync_operations{self.mail_manage_mode_changed();}
                             ui.label(egui::RichText::new("切换开关不会补交之前的本机操作。").size(11.5).color(settings_color(ctx,Color32::from_gray(195),Color32::from_gray(60))));
@@ -1715,22 +1735,8 @@ impl App {
                         });
                     }
                     _=>{
-                        settings_label(ui,"岛仔 Daozai");
-                        settings_card(ui,|ui|{
-                            ui.horizontal(|ui|{
-                                ui.label(egui::RichText::new(format!("版本 {}",env!("CARGO_PKG_VERSION"))).size(13.0));
-                                ui.add_space(8.0);
-                                ui.vertical(|ui|self.updates.ui(ui));
-                            });
-                            ui.label(egui::RichText::new("桌面顶部的音乐、专注、提醒与日程小助手。").size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
-                            ui.horizontal_wrapped(|ui|{
-                                if ui.button("打开本地数据目录").clicked(){self.pending.push(Cmd::Open(crate::model::config_dir()));}
-                                ui.label(egui::RichText::new("设备图标：Solar Icons · 480 Design").size(11.0).color(settings_color(ctx,Color32::from_gray(150),Color32::from_gray(105))));
-                                ui.hyperlink_to("CC BY 4.0", "https://creativecommons.org/licenses/by/4.0/");
-                            });
-                        });
-                        settings_label(ui,"支持作者");
-                        settings_card(ui,support_author);
+                        self.about_settings(ui);
+
                     }
                     }
                 });

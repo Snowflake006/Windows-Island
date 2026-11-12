@@ -1,0 +1,30 @@
+name: Publish Windows Island
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=Windows-Island
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify version tag
+        shell: pwsh
+        run: |
+          $version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag and app version differ' }
+      - run: cargo build --locked --release --bin daozai
+      - name: Package verified portable update
+        shell: pwsh
+        run: ./scripts/package-island.ps1 -Executable ./target/release/daozai.exe
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME dist/Windows-Island-v*-windows-x64.zip dist/SHA256SUMS.txt --title "Windows Island $env:GITHUB_REF_NAME" --generate-notes

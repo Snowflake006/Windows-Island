@@ -1,8 +1,8 @@
 #pragma code_page(65001)
 1 ICON "assets/daozai.ico"
 1 VERSIONINFO
- FILEVERSION 0,6,63,0
- PRODUCTVERSION 0,6,63,0
+ FILEVERSION 1,0,0,0
+ PRODUCTVERSION 1,0,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x40004L
@@ -13,12 +13,12 @@ BEGIN
     BEGIN
         BLOCK "080404b0"
         BEGIN
-            VALUE "FileDescription", "岛仔"
-            VALUE "InternalName", "Daozai"
-            VALUE "OriginalFilename", "daozai.exe"
-            VALUE "ProductName", "岛仔 Daozai"
-            VALUE "ProductVersion", "0.6.63"
-            VALUE "FileVersion", "0.6.63"
+            VALUE "FileDescription", "Windows Island"
+            VALUE "InternalName", "Windows Island"
+            VALUE "OriginalFilename", "Windows Island.exe"
+            VALUE "ProductName", "Windows Island"
+            VALUE "ProductVersion", "1.0.0"
+            VALUE "FileVersion", "1.0.0"
         END
     END
     BLOCK "VarFileInfo"

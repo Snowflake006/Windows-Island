@@ -201,6 +201,17 @@ pub struct Settings {
     pub visible_pages: [bool; 8],
     pub page_order: [usize; 8],
     pub show_battery: bool,
+    pub companion_badge: bool,
+    pub badge_style: u8,
+    pub companion_labels: bool,
+    pub companion_todos: bool,
+    pub companion_max_icons: u8,
+    pub companion_done_seconds: u8,
+    pub unlock_seconds: u8,
+    pub vpn_tint: bool,
+    pub companion_bar: bool,
+    pub vpn_clock: bool,
+    pub unlock_feedback: bool,
     pub clock_12h: bool,
     pub clock_period: u8,
     pub resident_order: Vec<usize>,
@@ -242,7 +253,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 8], page_order: [0,1,2,3,4,5,6,7], show_battery: true, companion_badge:true, badge_style:0, companion_labels:true, companion_todos:true, companion_max_icons:4, companion_done_seconds:3, unlock_seconds:3, vpn_tint:true, companion_bar:true, vpn_clock:true, unlock_feedback:true, clock_12h: false, clock_period: 0, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true }
     }
 }
 
@@ -303,6 +314,17 @@ impl Settings {
                     }
                 }
                 "clock_period" => s.clock_period = v.parse::<u8>().ok().filter(|v|*v<=2).unwrap_or(0),
+                "badge_style" => s.badge_style=v.parse::<u8>().unwrap_or(0).min(1),
+                "companion_badge" => s.companion_badge=v!="0",
+                "companion_labels" => s.companion_labels=v!="0",
+                "companion_todos" => s.companion_todos=v!="0",
+                "vpn_tint" => s.vpn_tint=v!="0",
+                "companion_max_icons" => s.companion_max_icons=v.parse::<u8>().unwrap_or(s.companion_max_icons).clamp(1,6),
+                "companion_done_seconds" => s.companion_done_seconds=v.parse::<u8>().unwrap_or(s.companion_done_seconds).clamp(1,10),
+                "unlock_seconds" => s.unlock_seconds=v.parse::<u8>().unwrap_or(s.unlock_seconds).clamp(1,8),
+                "companion_bar" => s.companion_bar=v!="0",
+                "vpn_clock" => s.vpn_clock=v!="0",
+                "unlock_feedback" => s.unlock_feedback=v!="0",
                 "clock_12h" => s.clock_12h = v == "1",
                 "show_battery" => s.show_battery = v != "0",
                 "visible_pages" if (6..=8).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
@@ -366,6 +388,17 @@ impl Settings {
                 ("page_order".into(),self.page_order.iter().map(usize::to_string).collect::<Vec<_>>().join(",")),
                 ("resident_order".into(),self.resident_order.iter().map(usize::to_string).collect::<Vec<_>>().join(",")),
                 ("clock_period".into(), self.clock_period.to_string()),
+                ("badge_style".into(),self.badge_style.to_string()),
+                ("companion_badge".into(),(self.companion_badge as u8).to_string()),
+                ("companion_labels".into(),(self.companion_labels as u8).to_string()),
+                ("companion_todos".into(),(self.companion_todos as u8).to_string()),
+                ("vpn_tint".into(),(self.vpn_tint as u8).to_string()),
+                ("companion_max_icons".into(),self.companion_max_icons.to_string()),
+                ("companion_done_seconds".into(),self.companion_done_seconds.to_string()),
+                ("unlock_seconds".into(),self.unlock_seconds.to_string()),
+                ("companion_bar".into(),(self.companion_bar as u8).to_string()),
+                ("vpn_clock".into(),(self.vpn_clock as u8).to_string()),
+                ("unlock_feedback".into(),(self.unlock_feedback as u8).to_string()),
                 ("clock_12h".into(), (self.clock_12h as u8).to_string()),
                 ("show_battery".into(), (self.show_battery as u8).to_string()),
                 ("read_notifications".into(),(self.read_notifications as u8).to_string()),

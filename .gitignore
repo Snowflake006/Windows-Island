@@ -13,3 +13,10 @@
 *.key
 .DS_Store
 Thumbs.db
+
+.tools/
+
+/src/companion/data/
+/src/companion/__pycache__/
+
+/*.exe
