@@ -72,3 +72,5 @@ mod preview_raster;
 pub mod companion;
 
 mod about;
+
+mod account;

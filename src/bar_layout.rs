@@ -13,6 +13,7 @@ pub(crate) const FOCUS: usize = 7;
 pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
 pub(crate) const BADGE: usize = 10;
+pub(crate) const CONTENT_GAP:f32=7.0;
 const WIDTHS: [f32; 11] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0,22.0];
 
 pub(crate) const DEFAULT_ORDER: [usize;6]=[BATTERY,PET,CLOCK,QUOTA,MUSIC,FOCUS];
@@ -102,16 +103,26 @@ impl Layout {
     }
     pub fn reorder(&mut self,order:&[usize]) {
         if !valid_order(order){return;}
-        let original=self.x.clone();let mut cursor=-self.width/2.0+16.0;
+        let original=self.x.clone();
+        let mut groups=Vec::new();
         for slot in full_order(order,true).into_iter().chain(std::iter::once(BELL)) {
             let slots:Vec<usize>=if slot==QUOTA{self.quota_slots().collect()}else{vec![slot]};
             let left=slots.iter().filter_map(|&i|original[i].map(|x|x-self.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
             let right=slots.iter().filter_map(|&i|original[i].map(|x|x+self.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);
-            if !left.is_finite(){continue;}
-            for i in slots {if let Some(x)=original[i]{self.x[i]=Some(cursor+x-left);}}
-            cursor+=right-left+12.0;
+            if left.is_finite(){groups.push((slot,slots,left,right));}
+        }
+        let gap=|left:usize,right:usize|if left==COMPANION || right==COMPANION{CONTENT_GAP}else{12.0};
+        let content=groups.iter().map(|(_,_,left,right)|right-left).sum::<f32>()
+            +groups.windows(2).map(|pair|gap(pair[0].0,pair[1].0)).sum::<f32>();
+        self.width=(content+32.0).max(96.0);
+        let mut cursor=-content/2.0;
+        for (index,(_,slots,left,right)) in groups.iter().enumerate() {
+            for &i in slots {if let Some(x)=original[i]{self.x[i]=Some(cursor+x-left);}}
+            cursor+=right-left;
+            if let Some(next)=groups.get(index+1){cursor+=gap(groups[index].0,next.0);}
         }
     }
+
     /// 圆环换边经过时钟时，暂时淡出时钟，避免移动中相互遮挡。
     pub fn clearance(&self,slot:usize)->f32 {
         let Some(x)=self.x[slot] else{return 0.0;};
@@ -130,10 +141,11 @@ impl Layout {
 pub(crate) struct Motion {
     pub target: Layout,
     positions: Vec<Spring>,
+    companion_width:Spring,
     initialized: bool,
 }
 impl Default for Motion {
-    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],initialized:false}}
+    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],companion_width:Spring::new(0.0,360.0,0.76),initialized:false}}
 }
 impl Motion {
     pub fn step(&mut self,target:Layout,dt:f32,animate:bool) {
@@ -144,15 +156,20 @@ impl Motion {
                 if !self.initialized || self.target.x.get(i).copied().flatten().is_none() || !animate {spring.snap(*x);}else{spring.step(dt);}
             }
         }
+        if target.x[COMPANION].is_some(){
+            self.companion_width.target=target.widths[COMPANION];
+            if !self.initialized || self.target.x[COMPANION].is_none() || !animate{self.companion_width.snap(target.widths[COMPANION]);}else{self.companion_width.step(dt);}
+        }
         self.target=target;self.initialized=true;
     }
     pub fn current(&self)->Layout {
         let mut layout=self.target.clone();
+        if layout.x[COMPANION].is_some(){layout.widths[COMPANION]=self.companion_width.pos.max(0.0);}
         for (i,x) in layout.x.iter_mut().enumerate() {if x.is_some(){*x=Some(self.positions[i].pos);}}
         layout
     }
     pub fn position(&self,slot:usize)->f32 {self.positions[slot].pos}
-    pub fn settled(&self)->bool {self.target.x.iter().enumerate().all(|(i,x)|x.is_none()||self.positions[i].settled(100.0))}
+    pub fn settled(&self)->bool {(self.target.x[COMPANION].is_none()||self.companion_width.settled(100.0))&&self.target.x.iter().enumerate().all(|(i,x)|x.is_none()||self.positions[i].settled(100.0))}
 }
 
 #[cfg(test)]
@@ -222,5 +239,21 @@ mod tests {
         for _ in 0..120 {motion.step(after.clone(),1.0/60.0,true);}
         assert!((motion.current().x[QUOTA].unwrap()-after.x[QUOTA].unwrap()).abs()<0.01);
         motion.step(before.clone(),1.0/60.0,false);assert_eq!(motion.current().x,before.x);
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn companion_elastic_width_keeps_neighbor_spacing_during_growth_and_shrink(){
+    let layout=|width|{let mut layout=Layout::new(false,2,true,true,false,false);layout.add_companion(width);layout.reorder(&[BADGE,MUSIC,FOCUS,COMPANION,QUOTA,PET,BATTERY,CLOCK]);layout};
+    let mut motion=Motion::default();motion.step(layout(57.5),0.0,true);
+    for width in [45.0,97.0,149.0,57.5]{
+        for _ in 0..120{
+            motion.step(layout(width),1.0/60.0,true);let current=motion.current();
+            let right=current.x[COMPANION].unwrap()+current.widths[COMPANION]/2.0;
+            let next=current.x[QUOTA].unwrap()-current.widths[QUOTA]/2.0;
+            assert!((next-right-CONTENT_GAP).abs()<0.02,"spacing must remain equal throughout animation");
+        }
+        assert!((motion.current().widths[COMPANION]-width).abs()<0.1);
     }
 }

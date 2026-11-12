@@ -23,6 +23,7 @@
 | 日历连接 | 飞书、钉钉、企业微信、iCloud、CalDAV、Exchange ActiveSync 与 ICS 导入 |
 | AI 账户额度 | Codex、Claude、Kimi、Grok Bot、Gemini、ZCode、WorkBuddy、DeepSeek；多账号、余额和重置时间 |
 | 系统状态 | 电量、充电、网络、音量、蓝牙、大写锁定与输入语言提示 |
+| 账户与备份 | GitHub 连接、个人偏好手动备份 / 恢复；微信和 QQ 待接入 |
 | 本地更新 | 关于页检查本仓库正式版，立即更新、进度显示、SHA-256 校验、替换后重启并保留数据 |
 
 详细操作、支持范围与限制见 [完整功能列表](docs/FEATURES.md) 和 [桌面状态说明](docs/COMPANION.md)。

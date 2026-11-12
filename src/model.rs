@@ -282,8 +282,12 @@ impl Settings {
     }
 
     pub fn load() -> Self {
+        Self::from_pairs(read_kv(&config_dir().join("settings.txt")))
+    }
+
+    pub(crate) fn from_pairs(pairs: Vec<(String,String)>) -> Self {
         let mut s = Self::default();
-        for (k, v) in read_kv(&config_dir().join("settings.txt")) {
+        for (k, v) in pairs {
             match k.as_str() {
                 "settings_theme" => s.settings_theme=crate::settings_theme::SettingsTheme::parse(&v),
                 "display_id" => s.display_id = v,
@@ -367,10 +371,14 @@ impl Settings {
         s
     }
 
-    pub fn save(&self) {
-        let _ = write_kv(
-            &config_dir().join("settings.txt"),
-            &[
+    pub fn save(&self) { let _ = self.try_save(); }
+
+    pub(crate) fn try_save(&self) -> std::io::Result<()> {
+        write_kv(&config_dir().join("settings.txt"), &self.pairs())
+    }
+
+    pub(crate) fn pairs(&self) -> Vec<(String,String)> {
+        vec![
                 ("display_id".into(),self.display_id.clone()),
                 ("skin".into(),self.skin.key().into()),
                 ("island_shape".into(),self.island_shape.key().into()),
@@ -430,8 +438,7 @@ impl Settings {
                 ("calendar_prompt".into(), (self.calendar_prompt as u8).to_string()),
                 ("calendar_auto_sync".into(), (self.calendar_auto_sync as u8).to_string()),
                 ("clipboard_history".into(), (self.clipboard_history as u8).to_string()),
-            ],
-        );
+        ]
     }
 }
 

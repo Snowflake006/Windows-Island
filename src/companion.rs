@@ -86,7 +86,18 @@ fn icon(state:&mut State,c:&Card,a:&Agent,x:f32,y:f32){
     let light=if color<1.0{paint::mix(a.color(),theme::SOFT_GREEN,color)}else{paint::mix(theme::SOFT_GREEN,theme::RED_TOP,color-1.0)};
     c.circle(x+7.0,y+5.0,3.4,theme::CARD); c.circle(x+7.0,y+5.0,2.1,light);
 }
+const AGENT_WIDTH:f32=19.0;
+const AGENT_GAP:f32=crate::bar_layout::CONTENT_GAP;
+fn agent_icons_width(count:usize)->f32 {if count==0{0.0}else{count as f32*AGENT_WIDTH+(count-1) as f32*AGENT_GAP}}
+
 impl App {
+    fn companion_text_width(&self,ctx:&egui::Context,text:&str,size:f32)->f32 {
+        let scale=self.settings.island_scale();
+        ctx.fonts(|fonts|fonts.layout_no_wrap(text.to_owned(),theme::font(size*scale,W::Regular),Color32::WHITE).size().x/scale)
+    }
+    fn companion_agents_width(&self,ctx:&egui::Context,shown:usize,total:usize)->f32 {
+        agent_icons_width(shown)+if total>shown{AGENT_GAP+self.companion_text_width(ctx,&format!("+{}",total-shown),10.0)}else{0.0}
+    }
     pub(crate) fn companion_step(&mut self,env:&Env){self.companion.hold_seconds=self.settings.companion_done_seconds as f64;self.companion.greeting_seconds=self.settings.unlock_seconds as f64+0.2;self.companion.max_icons=self.settings.companion_max_icons as usize;if !self.settings.unlock_feedback{self.companion.unlock=env.unlock_version;self.companion.unlock_at=None;}self.companion.update(&env.companion,self.t,if self.settings.unlock_feedback{env.unlock_version}else{self.companion.unlock});}
     pub(crate) fn companion_slot_enabled(&self)->bool {self.companion.greeting(self.t) || self.settings.companion_bar && (!self.companion.visible.is_empty()||self.settings.companion_todos)}
     fn companion_todo(&self)->(String,usize){
@@ -96,12 +107,15 @@ impl App {
     }
     pub(crate) fn companion_width(&self,ctx:&egui::Context)->f32 {
         if !self.companion_slot_enabled(){return 0.0;}
-        let text_width=|text:String|ctx.fonts(|fonts|fonts.layout_no_wrap(text,theme::font(10.5,W::Regular),Color32::WHITE).size().x);
-        if self.companion.greeting(self.t){return 102.0;}
+        if self.companion.greeting(self.t){
+            let scale=self.settings.island_scale();
+            let label=ctx.fonts(|fonts|fonts.layout_no_wrap("已解锁".into(),theme::font(11.0*scale,W::Semibold),Color32::WHITE).size().x/scale);
+            return label+if self.companion.snapshot.unlock_hint=="face"{24.0+AGENT_GAP}else{0.0};
+        }
         match self.companion.visible.as_slice(){
-            []=>(text_width(self.companion_todo().0)+8.0).clamp(32.0,116.0),
-            [agent]=>if self.settings.companion_labels{30.0+text_width(agent.label().to_owned())}else{22.0},
-            agents=>(agents.len().min(self.companion.limit()) as f32*25.0-3.0+if agents.len()>self.companion.limit(){20.0}else{0.0}).max(60.0),
+            []=>self.companion_text_width(ctx,&self.companion_todo().0,10.5).min(116.0),
+            [agent]=>AGENT_WIDTH+if self.settings.companion_labels{AGENT_GAP+self.companion_text_width(ctx,agent.label(),10.5)}else{0.0},
+            agents=>self.companion_agents_width(ctx,agents.len().min(self.companion.limit()),agents.len()),
         }
     }
     pub(crate) fn companion_badge_draw(&mut self,c:&Card,x:f32,y:f32){
@@ -136,14 +150,12 @@ impl App {
         c.hit(x-6.0,y,w+12.0,h,"vpn-clock-tip").on_hover_text(if vpn.text.is_empty(){"VPN 未连接"}else{&vpn.text});
     }
     pub(crate) fn companion_bar(&mut self,c:&Card,cx:f32,width:f32){
-        let slot_width=width;let actual_left=cx-width/2.0;
-        let clip=c.clipped(actual_left-2.0,0.0,width+4.0,30.0);let c=&clip;
-        let offset=24.0;
-        let x=actual_left-offset;let width=width+offset;
+        let x=cx-width/2.0;
+        let clip=c.clipped(x,0.0,width,30.0);let c=&clip;
 
         if !self.settings.companion_bar&&!self.companion.greeting(self.t){return;}
         if self.companion.visible.is_empty()&&!self.settings.companion_todos&&!self.companion.greeting(self.t){return;}
-        if width<40.0{return;}
+        if width<16.0{return;}
         if self.companion.greeting(self.t){
             let age=(self.t-self.companion.unlock_at.unwrap()) as f32;
             let a=(age/0.24).min(1.0)*((self.companion.greeting_duration() as f32-age)/0.35).min(1.0);let cc=c.faded(a);
@@ -154,38 +166,45 @@ impl App {
                 if let Ok(img)=image::open(crate::model::config_dir().join("companion").join(format!("{key}.png"))){let rgba=img.into_rgba8();let size=[rgba.width() as usize,rgba.height() as usize];self.companion.textures.insert(key.clone(),c.ui.ctx().load_texture(&key,egui::ColorImage::from_rgba_unmultiplied(size,rgba.as_raw()),Default::default()));}
             }
             if let Some(texture)=self.companion.textures.get(&key).filter(|_|self.companion.snapshot.unlock_hint=="face"){
-                cc.painter.image(texture.id(),cc.rect(x+30.0,3.0,24.0,24.0),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
-                cc.text(x+61.0,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;
+                cc.painter.image(texture.id(),cc.rect(x,3.0,24.0,24.0),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
+                cc.text(x+24.0+AGENT_GAP,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;
             }
-            if self.companion.snapshot.unlock_hint!="face" {cc.text(x+31.0,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;}
-            let xx=x+42.0;let yy=15.0;let k=0.82+0.18*crate::anim::smoothstep(0.0,0.5,age);
+            if self.companion.snapshot.unlock_hint!="face" {cc.text(x,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;}
+            let xx=x+12.0;let yy=15.0;let k=0.82+0.18*crate::anim::smoothstep(0.0,0.5,age);
             let cc=cc.scaled(xx,yy,k);cc.circle(xx-4.0,yy-3.0,1.2,theme::BLUE);cc.circle(xx+4.0,yy-3.0,1.2,theme::BLUE);
             let points=(0..=16).map(|i|{let u=i as f32/16.0;cc.pos(xx-6.0+12.0*u,yy+2.0+3.5*(u*std::f32::consts::PI).sin())}).collect();
             cc.painter.add(egui::Shape::line(points,egui::Stroke::new(1.4*cc.s,theme::BLUE)));
-            cc.text(x+61.0,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;
+            cc.text(x+24.0+AGENT_GAP,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;
         }
         let agents=self.companion.visible.clone();
         if agents.is_empty(){
             let (text,count)=self.companion_todo();
             let fade=if count>1{crate::anim::smoothstep(0.0,0.24,(self.t%6.0) as f32)}else{1.0};
-            c.faded(fade).shifted(0.0,(1.0-fade)*2.0).text(x+28.0,19.0,&c.fit(&text,10.5,W::Regular,width-31.0),10.5,W::Regular,theme::GRAY,H::Left);
-            if c.hit(x+25.0,2.0,width-25.0,27.0,"companion-todo").on_hover_text(text).clicked(){self.show_page(4);}return;
+            c.faded(fade).shifted(0.0,(1.0-fade)*2.0).text(x,19.0,&c.fit(&text,10.5,W::Regular,width),10.5,W::Regular,theme::GRAY,H::Left);
+            if c.hit(x,2.0,width,27.0,"companion-todo").on_hover_text(text).clicked(){self.show_page(4);}return;
         }
-        let overflow=if agents.len()>self.companion.limit(){20.0}else{0.0};
-        let capacity=(((slot_width+3.0-overflow)/25.0) as usize).clamp(1,self.companion.limit());
+        let mut capacity=agents.len().min(self.companion.limit());
+        while capacity>1 && self.companion_agents_width(c.ui.ctx(),capacity,agents.len())>width+0.1{capacity-=1;}
         for (i,a) in agents.iter().take(capacity).enumerate(){
-            let target=x+34.0+i as f32*25.0;
+            let target=x+8.0+i as f32*(AGENT_WIDTH+AGENT_GAP);
             let xx=target; // Parent layout owns movement; preview and island never share absolute coordinates.
             let age=(self.t-self.companion.state_at.get(&a.name).copied().unwrap_or(0.0)) as f32;
             let fade=crate::anim::smoothstep(0.0,0.2,age);
             let shifted=c.shifted(0.0,(1.0-fade)*2.0).faded(fade);
             icon(&mut self.companion,&shifted,a,xx,15.0);
-            let w=if agents.len()==1{width-25.0}else{24.0};
-            let hit=c.hit(xx-11.0,2.0,w,27.0,("live-agent",&a.name));
+            let w=if agents.len()==1{width}else{AGENT_WIDTH};
+            let hit=c.hit(xx-8.0,2.0,w,27.0,("live-agent",&a.name));
             if hit.on_hover_text(format!("{} · {}",a.name,a.label())).clicked(){self.companion.panel=true;self.companion.selected=Some(a.name.clone());self.show_page(6);}
-            if agents.len()==1 && slot_width>=40.0 && self.settings.companion_labels{shifted.text(x+51.0,19.0,&shifted.fit(a.label(),10.5,W::Regular,(slot_width-29.0).max(0.0)),10.5,W::Regular,a.color(),H::Left);}
+            if agents.len()==1 && width>=AGENT_WIDTH+AGENT_GAP+10.5 && self.settings.companion_labels{shifted.text(x+AGENT_WIDTH+AGENT_GAP,19.0,&shifted.fit(a.label(),10.5,W::Regular,(width-AGENT_WIDTH-AGENT_GAP).max(0.0)),10.5,W::Regular,a.color(),H::Left);}
         }
-        if agents.len()>capacity && slot_width>=35.0{c.text(x+width-2.0,19.0,&format!("+{}",agents.len()-capacity),10.0,W::Regular,theme::GRAY,H::Right);}
+        if agents.len()>capacity {
+            let more=format!("+{}",agents.len()-capacity);
+            let left=x+agent_icons_width(capacity)+AGENT_GAP;
+            if left+c.text_w(&more,10.0,W::Regular)<=x+width+0.1 {
+                c.text(left,19.0,&more,10.0,W::Regular,theme::GRAY,H::Left);
+                if c.hit(left,2.0,width-(left-x),27.0,"live-agent-more").on_hover_text("查看所有智能体").clicked(){self.companion.panel=true;self.show_page(6);}
+            }
+        }
     }
     pub(crate) fn companion_side(&mut self,c:&Card,cx:f32,top:f32){
         if self.settings.companion_badge{self.companion_badge_draw(c,cx,top+12.0);}
