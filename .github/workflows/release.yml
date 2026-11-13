@@ -7,7 +7,7 @@ on:
       tag:
         description: 'Release tag'
         required: true
-        default: v1.0.2
+        default: v1.0.3
 permissions:
   contents: write
 jobs:
@@ -27,6 +27,11 @@ jobs:
         run: |
           $version = [regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version = "([^"]+)"').Groups[1].Value
           if ($env:RELEASE_TAG -ne "v$version") { throw 'Tag and app version differ' }
+      - name: Verify Mihomo detection
+        shell: powershell
+        run: |
+          ./src/companion/Test-VpnStatus.ps1
+          ./src/companion/Test-VpnTransport.ps1
       - run: cargo build --locked --release --bin daozai
       - name: Package verified portable update
         shell: pwsh

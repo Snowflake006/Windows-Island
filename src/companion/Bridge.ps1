@@ -13,6 +13,8 @@ if (!(Test-Path (Join-Path $bundledPython 'python.exe')) -and (Test-Path (Join-P
 . (Join-Path $root 'AgentProcesses.ps1')
 $collector=[PowerShell]::Create(); $vpn=[PowerShell]::Create()
 $collection=[IO.File]::ReadAllText((Join-Path $root 'Collector.ps1'))
+$vpnModule=[IO.File]::ReadAllText((Join-Path $root 'VpnStatus.ps1'))
+$vpnLoaded=$false
 try { & (Join-Path $root 'Hello.ps1') -Directory $dataDir } catch {}
 $pending=$null; $vpnPending=$null; $desktop=$null; $fast=$null
 $agents=@(); $usage=@(); $vpnState=@{Connected=$false;Text='正在检查连接'}
@@ -40,10 +42,15 @@ try {
    if ($result) {$agents=@($result.Agents);$usage=@($result.Usage)}
   }
   if (!$vpnPending -and [datetime]::Now -ge $nextVpn) {
-   $vpn.Commands.Clear(); $null=$vpn.AddScript('param($root); . (Join-Path $root "VpnStatus.ps1"); Get-IslandVpnStatus').AddArgument($root); $vpnPending=$vpn.BeginInvoke()
+   $vpn.Commands.Clear()
+   # Load once so discovery and delay caches survive between runspace calls.
+   if (!$vpnLoaded) { $null=$vpn.AddScript($vpnModule,$false); $vpnLoaded=$true }
+   $null=$vpn.AddScript('Get-IslandVpnStatus'); $vpnStartedAt=[datetime]::Now; $vpnPending=$vpn.BeginInvoke()
   }
   if ($vpnPending -and $vpnPending.IsCompleted) {
-   $v=@($vpn.EndInvoke($vpnPending)) | Select-Object -Last 1; if($v){$vpnState=$v}; $vpnPending=$null; $nextVpn=[datetime]::Now.AddMilliseconds(250)
+   $v=@($vpn.EndInvoke($vpnPending)) | Select-Object -Last 1
+   if($v){$vpnState=$v}else{$vpnState=@{Connected=$false;Delay=$null;Text='VPN 状态暂不可读'}}
+   $vpn.Streams.Error.Clear(); $vpnPending=$null; $nextVpn=$vpnStartedAt.AddSeconds(3)
   }
   if ($fast -and $fastLine.IsCompleted) {
    try { $line=$fastLine.Result; if($line){$fastSnapshot=$line | ConvertFrom-Json}; $fastLine=$fast.StandardOutput.ReadLineAsync() } catch {$fastSnapshot=$null}
