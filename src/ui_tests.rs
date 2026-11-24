@@ -74,7 +74,7 @@ fn weather_content_tap_switches_both_ways_with_a_short_transition(){
         h.app.show_page(8);let p=H::local(x,y);h.hover(p,1.0);h.click(p);
         assert!(h.app.weather.solar_open,"天气内容区 ({x},{y}) 应可以轻点切换");
         h.hover(p,0.05);
-        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("返回天气")&&t.fallback_color.a()>0&&t.fallback_color.a()<255)),"切换时应有短暂淡入动效");
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("日照进度待更新")&&t.fallback_color.a()>0&&t.fallback_color.a()<255)),"日照内容应有短暂淡入动效");
         h.hover(p,0.3);h.click(p);assert!(!h.app.weather.solar_open,"日照内容区也可以轻点返回");
         h.hover(p,0.3);
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="19°"&&t.fallback_color.a()==255)),"动效完成后应恢复清晰的天气概览");
@@ -126,20 +126,26 @@ fn weather_today_opens_solar_details_and_returns_to_forecast(){
     h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,sunrise:Some("06:52".into()),sunset:Some("17:21".into()),sun_times:None,..Default::default()});
     let has_refresh=|h:&H|h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)
         if matches!(t.galley.text(),"刷新"|"稍后刷新"|"更新中")));
+    let has_back=|h:&H|h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="返回天气"));
+    let action=|h:&H|h.ctx.read_response(egui::Id::new(("card",true,"weather-header-action"))).unwrap().rect;
     h.app.show_page(8);h.hover(H::local(250.0,65.0),1.0);
     assert!(has_refresh(&h),"天气总览应显示刷新");
+    assert!(!has_back(&h));
+    let refresh=action(&h);
     h.click(H::local(100.0,75.0));
     assert!(!has_refresh(&h),"进入日照的第一帧就应隐藏刷新");
     h.hover(H::local(100.0,75.0),0.3);
-    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("返回天气"))),"点击当天区域后应进入日出日落视图");
+    assert!(has_back(&h),"点击当天区域后应进入日出日落视图");
     assert!(!has_refresh(&h),"日照页上只显示返回天气");
+    assert_eq!(refresh,action(&h),"返回天气和刷新应共用同一个点击位置");
     for phrase in ["日出","日落","06:52","17:21","日照进度待更新"] {
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains(phrase))),"旧缓存日照视图缺少 {phrase}");
     }
     assert!(!h.app.weather.loading,"浏览日照视图不应额外发起网络请求");
-    h.click(H::local(80.0,44.0));
+    h.click(refresh.center());
     assert!(!h.app.weather.solar_open);
-    assert!(!has_refresh(&h),"返回动画中的日照按钮仍可见时不应显示刷新");
+    assert!(!has_back(&h),"返回的第一帧就应隐藏返回按钮");
+    assert!(has_refresh(&h),"返回后应立即恢复刷新");
     h.hover(H::local(80.0,44.0),0.3);
     assert!(has_refresh(&h),"返回后应恢复刷新");
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="日出 06:52")),"返回后应显示天气视图的日照入口");
@@ -504,13 +510,13 @@ fn weather_refresh_keeps_music_and_settings_shortcuts_separate(){
     h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
     h.app.show_page(8);h.hover(H::local(300.0,60.0),1.0);
     let rect=|name|h.ctx.read_response(egui::Id::new(("card",true,name))).unwrap().rect;
-    let refresh=rect("weather-refresh");
+    let refresh=rect("weather-header-action");
     assert!(!refresh.intersects(rect("header-music")));
     assert!(!refresh.intersects(rect("page-settings")));
-    assert!(refresh.right()<H::local(100.0,0.0).x);
+    assert!(refresh.right()<H::local(115.0,0.0).x);
     h.companion.vpn=crate::companion::Vpn{connected:true,delay:Some(139.0),text:String::new()};
     h.hover(H::local(300.0,60.0),1.0);
-    let connected=h.ctx.read_response(egui::Id::new(("card",true,"weather-refresh"))).unwrap().rect;
+    let connected=h.ctx.read_response(egui::Id::new(("card",true,"weather-header-action"))).unwrap().rect;
     assert_eq!(refresh,connected,"切换 VPN 不应移动刷新按钮");
 }
 
@@ -9398,7 +9404,7 @@ fn vpn_status_leaves_shelf_and_weather_actions_clear_and_clickable() {
     h.companion.vpn=crate::companion::Vpn{connected:true,delay:Some(139.0),text:String::new()};
     for (page,id,labels) in [
         (crate::app::SHELF_PAGE,"shelf-add",&["添加"][..]),
-        (crate::app::WEATHER_PAGE,"weather-refresh",&["刷新","稍后刷新","更新中"][..]),
+        (crate::app::WEATHER_PAGE,"weather-header-action",&["刷新","稍后刷新","更新中"][..]),
     ] {
         h.app.show_page(page);
         h.cursor=Some(H::local(175.0,75.0));

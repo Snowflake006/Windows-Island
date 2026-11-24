@@ -396,10 +396,7 @@ fn paint_sun_times(c: &Card, snapshot: &weather::Snapshot, now: i64, t: f32, sli
     let rise = snapshot.sunrise.as_deref().unwrap_or("--:--");
     let set = snapshot.sunset.as_deref().unwrap_or("--:--");
 
-    // 顶部：返回胶囊 + 地点。
-    c.fill(34.0, 37.0, 76.0, 19.0, 9.5, Color32::from_white_alpha(14));
-    c.path(&[(46.0, 42.5), (42.5, 46.5), (46.0, 50.5)], 1.4, theme::GRAY);
-    c.text(51.0, 50.5, "返回天气", 10.0, W::Regular, theme::GRAY, H::Left);
+    // 顶部地点。操作按钮由天气页统一绘制。
     let place = c.fit(&snapshot.place, 10.0, W::Regular, 150.0);
     let place_w = c.text(384.0, 50.5, &place, 10.0, W::Regular, theme::GRAY, H::Right);
     location_glyph(c, 384.0 - place_w - 7.0, 46.0, theme::GRAY, Color32::BLACK);
@@ -918,19 +915,8 @@ impl App {
     }
 
     pub(crate) fn page_weather(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
-        let solar_mix=self.page_weather_body(c,env,cmds);
-        if !self.weather.solar_open && solar_mix==0.0 {
-            // Keep the overview action below the title even when the VPN row is absent.
-            let refresh=c.shifted(0.0,-self.vpn_status_space());
-            let ready=self.weather_can_refresh();
-            let label=if self.weather.loading {"更新中"} else if ready {"刷新"} else {"稍后刷新"};
-            refresh.text(58.0,44.0,label,10.5,W::Regular,if ready {theme::GRAY}else{theme::DIM},H::Center);
-            if refresh.hit(30.0,30.0,56.0,18.0,"weather-refresh")
-                .on_hover_text("重新获取天气；自动模式会重新定位。请求间隔至少 30 秒，失败后至少 2 分钟")
-                .clicked() && ready {
-                self.weather_refresh();
-            }
-        }
+        self.page_weather_body(c,env,cmds);
+        self.weather_header_action(&c.shifted(0.0,-self.vpn_status_space()));
         if self.weather.solar_open {self.weather.picker_open=false;return;}
         // 地点行「📍 地名 ▾」是城市切换入口：在内容点击区之后注册，优先于「轻点切换日照」；
         // 面板最后注册，命中优先级最高。
@@ -946,7 +932,38 @@ impl App {
         if c.live && open>0.0 && open<1.0 {ctx.request_repaint();}
     }
 
-    fn page_weather_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) -> f32 {
+    fn weather_header_action(&mut self, c:&Card) {
+        const X:f32=34.0;
+        const Y:f32=34.0;
+        const WIDTH:f32=76.0;
+        const HEIGHT:f32=19.0;
+        let returning=self.weather.solar_open;
+        let refresh_ready=!returning && self.weather_can_refresh();
+        let mut button=c.hit(X,Y,WIDTH,HEIGHT,"weather-header-action");
+        if returning || refresh_ready {
+            button=button.on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
+        if !returning {
+            button=button.on_hover_text("重新获取天气；自动模式会重新定位。请求间隔至少 30 秒，失败后至少 2 分钟");
+        }
+        if button.clicked() {
+            if returning {
+                self.weather.solar_open=false;
+                c.ui.ctx().request_repaint();
+            } else if refresh_ready {
+                self.weather_refresh();
+            }
+        }
+        let ready=self.weather.solar_open || self.weather_can_refresh();
+        let label=if self.weather.solar_open {"返回天气"} else if self.weather.loading {"更新中"}
+            else if ready {"刷新"} else {"稍后刷新"};
+        let (hover,press)=c.hover_t(&button);
+        let visual=c.scaled(X+WIDTH/2.0,Y+HEIGHT/2.0,1.0-0.05*press);
+        visual.fill(X,Y,WIDTH,HEIGHT,HEIGHT/2.0,Color32::from_white_alpha((14.0+18.0*hover+24.0*press) as u8));
+        visual.text(X+WIDTH/2.0,Y+13.5,label,10.0,W::Regular,if ready {theme::GRAY}else{theme::DIM},H::Center);
+    }
+
+    fn page_weather_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         let loading = self.weather.loading;
         let footer=WEATHER_H-4.0;
         let source=self.weather_source.displayed;
@@ -978,7 +995,7 @@ impl App {
             };
             c.text(209.5, 104.0, title, 13.0, W::Semibold, theme::WHITE, H::Center);
             c.text(209.5, 124.0, &c.fit(&detail, 10.5, W::Regular, 320.0), 10.5, W::Regular, theme::GRAY, H::Center);
-            return 0.0;
+            return;
         };
 
         let age = chrono::Utc::now().timestamp() - snapshot.at;
@@ -1032,7 +1049,6 @@ impl App {
             // 只有过渡动画进行中才逐帧重绘；常态由 ambient_clock 决定，静止时不重绘。
             if self.weather.tap.is_some() || (self.weather.solar_open && slide<1.0) || (mix>0.0&&mix<1.0) || (lift>0.0&&lift<1.0) || (press>0.0&&press<1.0) {ctx.request_repaint();}
         }
-        mix
     }
 
     /// 设置页顶部的实况卡：按天气换渐变底色，右侧放动态大图标，底部一行指标与刷新按钮。
