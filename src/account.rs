@@ -217,7 +217,7 @@ fn perform(action:Action,profile:Option<Profile>)->Result<Outcome,String>{
 }
 
 impl App {
-    pub fn open_account_settings(&mut self){self.settings_tab=12;self.open_settings();}
+    pub fn open_account_settings(&mut self){self.settings_tab=crate::extras::SETTINGS_TAB_ACCOUNT;self.open_settings();}
 
     pub(crate) fn account_settings(&mut self,ui:&mut egui::Ui){
         self.account.poll();

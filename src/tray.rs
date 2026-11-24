@@ -9,6 +9,8 @@
 //!   `PostMessage(WM_NULL)` + `DestroyMenu`；
 //! - `Exit` 先摘图标再 `ExitProcess`；`TaskbarCreated` 广播时重建图标。
 
+use std::os::windows::ffi::OsStrExt;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -17,12 +19,12 @@ use std::time::Duration;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM, ERROR_ALREADY_EXISTS,
+    CloseHandle, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM, ERROR_ALREADY_EXISTS, ERROR_FILE_NOT_FOUND, ERROR_SUCCESS, WIN32_ERROR,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
-    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_BINARY, REG_OPTION_NON_VOLATILE, REG_SZ, REG_VALUE_TYPE, REG_SAM_FLAGS,
 };
 use windows::Win32::System::Threading::{CreateMutexW, ExitProcess};
 use windows::Win32::UI::Shell::{
@@ -68,6 +70,7 @@ struct Ctx {
     state: Arc<Mutex<State>>,
     taskbar_msg: u32,
     hicon: HICON,
+    before_exit: Box<dyn Fn() + Send>,
     added: AtomicBool,
     adds: AtomicU32,
 }
@@ -290,7 +293,7 @@ fn show_menu_at(hwnd: HWND, ctx: &Ctx, x: i32, y: i32) {
             CMD_SETTINGS => {let _=ctx.tx.send(Event::OpenSettings);}
             CMD_ABOUT => about(),
             CMD_EXIT => {
-                // 原版：先摘图标，再结束进程
+                (ctx.before_exit)();
                 remove_icon(hwnd);
                 ExitProcess(0);
             }
@@ -364,7 +367,16 @@ pub struct Tray {
 }
 
 impl Tray {
-    pub fn start(state: State) -> Option<Self> {
+    /// 与托盘菜单「退出」相同：先摘图标再结束进程（用于「立即重启」）。
+    pub fn exit_process(&self) -> ! {
+        unsafe { remove_icon(self.hwnd); ExitProcess(0); }
+    }
+}
+
+impl Tray {
+    pub fn start(state: State) -> Option<Self> {Self::start_with_exit(state,||{})}
+
+    pub(crate) fn start_with_exit(state: State,before_exit:impl Fn()+Send+'static) -> Option<Self> {
         let shared = Arc::new(Mutex::new(state));
         let (event_tx, event_rx) = channel();
         let (ready_tx, ready_rx) = channel();
@@ -416,6 +428,7 @@ impl Tray {
                     return;
                 };
                 let ctx = Box::new(Ctx {
+                    before_exit:Box::new(before_exit),
                     tx: event_tx,
                     state: thread_state,
                     taskbar_msg: RegisterWindowMessageW(w!("TaskbarCreated")),
@@ -493,6 +506,14 @@ impl Drop for Tray {
     }
 }
 
+/// 健康提醒独立播放，托盘气泡被 Windows 隐藏时也能听到。
+pub fn play_health_sound() {
+    use windows::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT, SND_NOSTOP};
+    // 异步播放期间 Windows 仍会读取这段内嵌的 WAV。
+    let wav = include_bytes!("../assets/health-reminder.wav");
+    unsafe { let _ = PlaySoundW(PCWSTR(wav.as_ptr().cast()), None, SND_MEMORY | SND_ASYNC | SND_NODEFAULT | SND_NOSTOP); }
+}
+
 /// 单实例：已有Windows Island实例时返回 false。
 pub fn single_instance() -> bool {
     unsafe {
@@ -512,57 +533,115 @@ pub fn single_instance() -> bool {
     }
 }
 
-fn run_key() -> Option<HKEY> {
+// Explorer keeps the Startup Apps switch separately from the Run command.
+#[cfg(target_pointer_width = "64")]
+const STARTUP_APPROVED: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run");
+#[cfg(target_pointer_width = "32")]
+const STARTUP_APPROVED: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run32");
+
+fn with_startup_key<T>(
+    subkey: PCWSTR,
+    access: REG_SAM_FLAGS,
+    operation: impl FnOnce(HKEY) -> Result<T, WIN32_ERROR>,
+) -> Result<T, WIN32_ERROR> {
     unsafe {
         let mut key = HKEY::default();
-        let rc = RegCreateKeyExW(
-            HKEY_CURRENT_USER,
-            RUN_KEY,
-            0,
-            PCWSTR::null(),
-            REG_OPTION_NON_VOLATILE,
-            KEY_QUERY_VALUE | KEY_SET_VALUE,
-            None,
-            &mut key,
-            None,
-        );
-        (rc.0 == 0).then_some(key)
+        let status = RegOpenKeyExW(HKEY_CURRENT_USER, subkey, 0, access, &mut key);
+        if status != ERROR_SUCCESS {
+            return Err(status);
+        }
+        let result = operation(key);
+        let _ = RegCloseKey(key);
+        result
+    }
+}
+
+fn read_startup_value(key: PCWSTR, expected_type: REG_VALUE_TYPE) -> Result<Vec<u8>, WIN32_ERROR> {
+    with_startup_key(key, KEY_QUERY_VALUE, |key| unsafe {
+        let mut bytes = vec![0; 522];
+        let mut count = bytes.len() as u32;
+        let mut kind = REG_VALUE_TYPE::default();
+        let status = RegQueryValueExW(key, RUN_VALUE, None, Some(&mut kind), Some(bytes.as_mut_ptr()), Some(&mut count));
+        if status != ERROR_SUCCESS {
+            return Err(status);
+        }
+        if kind != expected_type {
+            return Ok(Vec::new());
+        }
+        bytes.truncate(count as usize);
+        Ok(bytes)
+    })
+}
+
+fn delete_startup_value(subkey: PCWSTR) -> Result<(), WIN32_ERROR> {
+    match with_startup_key(subkey, KEY_SET_VALUE, |key| unsafe {
+        let status = RegDeleteValueW(key, RUN_VALUE);
+        if status == ERROR_SUCCESS { Ok(()) } else { Err(status) }
+    }) {
+        Err(ERROR_FILE_NOT_FOUND) => Ok(()),
+        result => result,
+    }
+}
+
+fn startup_command(exe: &Path) -> Vec<u8> {
+    let quote = u16::from(b'"');
+    std::iter::once(quote)
+        .chain(exe.as_os_str().encode_wide())
+        .chain([quote, 0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+fn startup_approved() -> bool {
+    match read_startup_value(STARTUP_APPROVED, REG_BINARY) {
+        Ok(value) => !matches!(value.first(), Some(3 | 7)),
+        Err(ERROR_FILE_NOT_FOUND) => true,
+        Err(_) => false,
     }
 }
 
 pub fn autostart_enabled() -> bool {
-    unsafe {
-        let mut key = HKEY::default();
-        if RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_QUERY_VALUE, &mut key).0 != 0 {
-            return false;
-        }
-        let mut size = 0u32;
-        let rc = RegQueryValueExW(key, RUN_VALUE, None, None, None, Some(&mut size));
-        let _ = RegCloseKey(key);
-        rc.0 == 0 && size > 0
-    }
+    std::env::current_exe().ok().is_some_and(|exe| {
+        exe.is_file()
+            && read_startup_value(RUN_KEY, REG_SZ).is_ok_and(|value| value == startup_command(&exe))
+            && startup_approved()
+    })
 }
 
 pub fn set_autostart(on: bool) -> Result<(), String> {
-    unsafe {
-        if on {
-            let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let value = format!("\"{}\"", exe.display());
-            let utf16 = wide(&value);
-            let bytes = std::slice::from_raw_parts(utf16.as_ptr() as *const u8, utf16.len() * 2);
-            let key = run_key().ok_or_else(|| "打不开 HKCU\\Run".to_string())?;
-            let rc = RegSetValueExW(key, RUN_VALUE, 0, REG_SZ, Some(bytes));
-            let _ = RegCloseKey(key);
-            if rc.0 != 0 {
-                return Err(format!("写 HKCU\\Run 失败：{}", rc.0));
-            }
-        } else {
-            let mut key = HKEY::default();
-            if RegOpenKeyExW(HKEY_CURRENT_USER, RUN_KEY, 0, KEY_SET_VALUE, &mut key).0 == 0 {
-                let _ = RegDeleteValueW(key, RUN_VALUE);
-                let _ = RegCloseKey(key);
-            }
+    if !on {
+        return delete_startup_value(RUN_KEY).map_err(|status| format!("无法关闭开机启动（{}）", status.0));
+    }
+
+    let exe = std::env::current_exe().map_err(|error| format!("找不到当前程序路径：{error}"))?;
+    let command = startup_command(&exe);
+    if command.len() > 522 {
+        return Err("程序路径过长，请将 Windows Island 移到较短的路径后再开启开机启动".into());
+    }
+
+    let status = unsafe {
+        let mut key = HKEY::default();
+        let status = RegCreateKeyExW(
+            HKEY_CURRENT_USER, RUN_KEY, 0, PCWSTR::null(), REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE, None, &mut key, None,
+        );
+        if status != ERROR_SUCCESS {
+            return Err(format!("无法打开开机启动项（{}）", status.0));
         }
+        let status = RegSetValueExW(key, RUN_VALUE, 0, REG_SZ, Some(&command));
+        let _ = RegCloseKey(key);
+        status
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!("无法写入开机启动项（{}）", status.0));
+    }
+
+    if !startup_approved() {
+        delete_startup_value(STARTUP_APPROVED)
+            .map_err(|status| format!("Windows 禁用了此启动项（{}），请在系统的启动应用中启用", status.0))?;
+    }
+    if !autostart_enabled() {
+        return Err("Windows 未确认开机启动，请检查系统的启动应用设置".into());
     }
     Ok(())
 }

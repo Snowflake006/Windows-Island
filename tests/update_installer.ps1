@@ -69,3 +69,5 @@ try {
 } finally {
     $env:LOCALAPPDATA = $oldLocal
 }
+# The rejection cases expect a nonzero native exit code.
+exit 0

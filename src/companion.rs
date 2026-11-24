@@ -88,6 +88,7 @@ fn icon(state:&mut State,c:&Card,a:&Agent,x:f32,y:f32){
 }
 const AGENT_WIDTH:f32=19.0;
 const AGENT_GAP:f32=crate::bar_layout::CONTENT_GAP;
+pub(crate) const VPN_CLOCK_INSET: f32 = 6.0;
 fn agent_icons_width(count:usize)->f32 {if count==0{0.0}else{count as f32*AGENT_WIDTH+(count-1) as f32*AGENT_GAP}}
 
 impl App {
@@ -142,8 +143,8 @@ impl App {
         if c.hit(x-12.0,y-12.0,24.0,24.0,"companion-mark").on_hover_text("智能体与连接状态").clicked(){self.companion.panel=true;self.show_page(6);}
     }
 
-    pub(crate) fn vpn_clock(&self,c:&Card,x:f32,y:f32,w:f32,h:f32){
-        if !self.settings.vpn_clock{return;}
+    pub(crate) fn vpn_clock(&self,c:&Card,x:f32,y:f32,w:f32,h:f32)->Option<egui::Rect>{
+        if !self.settings.vpn_clock{return None;}
         let vpn=&self.companion.snapshot.vpn;
         let target=if !vpn.connected{0.0}else{match vpn.delay{Some(d) if d<=150.0=>1.0,Some(d) if d<=300.0=>2.0,_=>3.0}};
         let k=c.ui.ctx().animate_value_with_time(egui::Id::new("vpn-clock"),target,0.62);
@@ -151,10 +152,57 @@ impl App {
         let green=Color32::from_rgb(48,209,88);let yellow=Color32::from_rgb(255,214,10);let red=Color32::from_rgb(255,69,58);
         let color=if k<1.0{green}else if k<2.0{paint::mix(green,yellow,k-1.0)}else{paint::mix(yellow,red,k-2.0)};
         if k>0.01 && self.settings.vpn_tint {
-            c.faded(k.min(1.0)).fill(x-6.0,y,w+12.0,h,h/2.0,color);
+            c.faded(k.min(1.0)).fill(x-VPN_CLOCK_INSET,y,w+2.0*VPN_CLOCK_INSET,h,h/2.0,color);
         }
-        c.hit(x-6.0,y,w+12.0,h,"vpn-clock-tip").on_hover_text(if vpn.text.is_empty(){"VPN 未连接"}else{&vpn.text});
+        (vpn.connected && self.settings.vpn_tint && k>0.01)
+            .then(||c.rect(x-VPN_CLOCK_INSET,y,w+2.0*VPN_CLOCK_INSET,h).intersect(c.painter.clip_rect()))
+            .filter(egui::Rect::is_positive)
     }
+
+    pub(crate) fn resident_clock_width(&self,c:&Card,clock:&str)->f32 {
+        let width=paint::clock_width(c,clock,theme::size::PILL_CLOCK);
+        if self.settings.vpn_clock && self.settings.vpn_tint && self.companion.snapshot.vpn.connected {
+            width+2.0*VPN_CLOCK_INSET
+        } else {
+            width
+        }
+    }
+
+    pub(crate) fn draw_vpn_clock(&mut self,c:&Card,x:f32,y:f32,w:f32,h:f32){
+        if let Some(rect)=self.vpn_clock(c,x,y,w,h) {
+            self.vpn_clock_bounds=Some(self.vpn_clock_bounds.map_or(rect,|other|other.union(rect)));
+        }
+    }
+
+    pub(crate) fn vpn_tooltip(&self,ctx:&egui::Context,env:&Env,available:egui::Rect)->Option<egui::Rect>{
+        let anchor=self.vpn_clock_bounds?;
+        if env.screen_locked || env.fullscreen_hidden || !env.cursor.is_some_and(|cursor|anchor.contains(cursor)) {return None;}
+        let vpn=&self.companion.snapshot.vpn;
+        let label=match vpn.delay {
+            Some(delay) if delay.is_finite() && delay>0.0=>format!("VPN 节点延迟 {delay:.0} ms"),
+            _ if vpn.text.is_empty()=>"VPN 已连接 · 暂无延迟数据".into(),
+            _=>vpn.text.clone(),
+        };
+        let painter=ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground,egui::Id::new("vpn-latency")));
+        let galley=painter.layout(label,theme::font(12.0,W::Regular),Color32::WHITE,(available.width()-28.0).max(20.0));
+        let size=galley.size()+egui::vec2(20.0,12.0);
+        let x=(anchor.center().x-size.x/2.0).clamp(available.left()+4.0,(available.right()-size.x-4.0).max(available.left()+4.0));
+        let y=if anchor.bottom()+6.0+size.y<=available.bottom(){anchor.bottom()+6.0}else{(anchor.top()-size.y-6.0).max(available.top())};
+        let rect=egui::Rect::from_min_size(egui::pos2(x,y),size);
+        painter.rect(rect,9.0,Color32::from_rgb(34,35,42),egui::Stroke::new(1.0,Color32::from_gray(75)),egui::StrokeKind::Inside);
+        painter.galley(rect.min+egui::vec2(10.0,6.0),galley,Color32::WHITE);
+        Some(rect)
+    }
+    pub(crate) fn draw_expanded_vpn_status(&self,c:&Card){
+        if self.vpn_status_space()==0.0{return;}
+        let vpn=&self.companion.snapshot.vpn;
+        let text=if let Some(delay)=vpn.delay.filter(|d|d.is_finite()&&*d>0.0) {
+            format!("VPN 节点延迟 {delay:.0} ms")
+        } else if vpn.text.is_empty() {"VPN 已连接 · 暂无延迟数据".into()} else {vpn.text.clone()};
+        c.circle(255.0,41.0,2.5,theme::SOFT_GREEN);
+        c.text(264.0,45.0,&c.fit(&text,9.5,W::Regular,112.0),9.5,W::Regular,theme::GRAY,H::Left);
+    }
+
     pub(crate) fn companion_bar(&mut self,c:&Card,cx:f32,width:f32){
         let x=cx-width/2.0;
         let clip=c.clipped(x,0.0,width,30.0);let c=&clip;
@@ -228,10 +276,7 @@ impl App {
             b.text(x+41.0,45.0,label,10.5,W::Semibold,if on{theme::WHITE}else{theme::GRAY},H::Center);
             if r.clicked(){self.companion.panel=label=="运行状态";self.companion.selected=None;}
         }
-        if !self.companion.panel {self.page_quota(&c.shifted(0.0,27.0));return;}
-        let vpn=self.companion.snapshot.vpn.clone();
-        c.circle(255.0,41.0,2.5,if vpn.connected{theme::SOFT_GREEN}else{theme::DIM});
-        c.text(264.0,45.0,&c.fit(&vpn.text,9.5,W::Regular,103.0),9.5,W::Regular,theme::GRAY,H::Left);
+        if !self.companion.panel {self.page_quota(&c.shifted(0.0,27.0+self.vpn_status_space()));return;}
         if let Some(name)=self.companion.selected.clone(){
             if c.hit(44.0,60.0,50.0,20.0,"agent-back").on_hover_text("返回列表").clicked(){self.companion.selected=None;return;}
             c.text(44.0,75.0,"‹ 返回",10.5,W::Regular,theme::GRAY,H::Left);

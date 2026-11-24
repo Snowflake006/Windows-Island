@@ -20,7 +20,7 @@ impl App {
             });
             ui.add_space(2.0);
             ui.horizontal_wrapped(|ui|{
-                egui::Frame::new().fill(settings_color(&ctx,Color32::from_rgb(28,64,102),Color32::from_rgb(229,241,255))).corner_radius(5.0).inner_margin(egui::Margin::symmetric(7,3)).show(ui,|ui|{ui.label(RichText::new(format!("v{}",env!("CARGO_PKG_VERSION"))).size(11.0).color(settings_color(&ctx,Color32::from_rgb(121,188,255),Color32::from_rgb(0,105,210))));});
+                egui::Frame::new().fill(settings_color(&ctx,Color32::from_rgb(28,64,102),Color32::from_rgb(229,241,255))).corner_radius(5.0).inner_margin(egui::Margin::symmetric(7,3)).show(ui,|ui|{ui.label(RichText::new(format!("v{}",option_env!("DAOZAI_BUILD_LABEL").unwrap_or(env!("CARGO_PKG_VERSION")))).size(11.0).color(settings_color(&ctx,Color32::from_rgb(121,188,255),Color32::from_rgb(0,105,210))));});
                 ui.label(RichText::new("Windows 10 / 11 · x64 · MIT 开源").size(11.0).color(muted));
             });
             ui.label(RichText::new("基于岛仔 Daozai 二次开发 · 致敬原创").size(10.5).color(muted));
@@ -61,6 +61,9 @@ impl App {
             ui.hyperlink_to("项目主页",PROJECT);
             ui.hyperlink_to("反馈问题",format!("{PROJECT}/issues"));
             if ui.small_button("本地数据").clicked(){self.pending.push(Cmd::Open(crate::model::config_dir()));}
+            if ui.small_button("收集诊断").clicked() && crate::diagnostics_tool::launch().is_err() {
+                self.say("无法启动诊断收集");
+            }
         });
         ui.add_space(6.0);
         ui.label(RichText::new("设备图标：Solar Icons · 480 Design · CC BY 4.0").size(10.0).color(muted));

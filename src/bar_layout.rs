@@ -4,6 +4,8 @@ use crate::anim::{smoothstep, Spring};
 pub(crate) const CLOCK: usize = 0;
 pub(crate) const BATTERY: usize = 1;
 pub(crate) const QUOTA: usize = 2;
+/// 可独立排列的天气徽标。
+pub(crate) const WEATHER: usize = 11;
 pub(crate) fn quota_slot(position:usize)->usize {
     if position<3 {QUOTA+position} else {WIDTHS.len()+position-3}
 }
@@ -13,19 +15,21 @@ pub(crate) const FOCUS: usize = 7;
 pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
 pub(crate) const BADGE: usize = 10;
-pub(crate) const CONTENT_GAP:f32=7.0;
-const WIDTHS: [f32; 11] = [44.0,20.0,27.0,27.0,27.0,22.0,14.0,crate::focus_bar::WIDTH,20.0,32.0,22.0];
+pub(crate) const CONTENT_GAP: f32 = 8.0;
+pub(crate) const WEATHER_WIDTH: f32 = 38.0;
+const WIDTHS: [f32; 12] = [44.0,20.0,27.0,27.0,27.0,22.0,crate::paint::PLAYBACK_BARS_WIDTH,crate::focus_bar::WIDTH,20.0,32.0,22.0,WEATHER_WIDTH];
 
-pub(crate) const DEFAULT_ORDER: [usize;6]=[BATTERY,PET,CLOCK,QUOTA,MUSIC,FOCUS];
+pub(crate) const DEFAULT_ORDER: [usize;7]=[BATTERY,PET,CLOCK,WEATHER,QUOTA,MUSIC,FOCUS];
 pub(crate) fn valid_order(order:&[usize])->bool {
-    (6..=8).contains(&order.len()) && DEFAULT_ORDER.iter().all(|slot|order.iter().filter(|value|*value==slot).count()==1)
-        && (order.len()==6 || order.iter().filter(|&&slot|slot==COMPANION).count()==1)
-        && (order.len()<8 || order.iter().filter(|&&slot|slot==BADGE).count()==1)
+    (6..=9).contains(&order.len()) && DEFAULT_ORDER.iter().filter(|&&slot|slot!=WEATHER).all(|slot|order.iter().filter(|value|*value==slot).count()==1)
+        && [WEATHER, COMPANION, BADGE].iter().all(|slot|order.iter().filter(|value|*value==slot).count()<=1)
+        && order.iter().all(|slot|DEFAULT_ORDER.contains(slot) || [COMPANION,BADGE].contains(slot))
 }
 pub(crate) fn full_order(order:&[usize],battery:bool)->Vec<usize>{
-    let mut result=if valid_order(order){order.to_vec()}else if battery{DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,BATTERY,MUSIC,FOCUS]};
+    let mut result=if valid_order(order){order.to_vec()}else if battery{DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,WEATHER,BATTERY,MUSIC,FOCUS]};
     if !result.contains(&COMPANION){result.insert(0,COMPANION);}
     if !result.contains(&BADGE){let index=result.iter().position(|&s|s==COMPANION).unwrap_or(0);result.insert(index,BADGE);}
+    if !result.contains(&WEATHER) {let index=result.iter().position(|&s|s==CLOCK).unwrap();result.insert(index+1,WEATHER);}
     result
 }
 
@@ -51,8 +55,8 @@ pub(crate) struct Layout {
 }
 
 impl Layout {
-    pub fn new(battery:bool,quotas:usize,music:bool,focus:bool,bell:bool,pet:bool)->Self {
-        fn place(cursor:&mut f32,width:f32)->f32 {let x=*cursor+width/2.0;*cursor+=width+12.0;x}
+    pub fn new(battery:bool,quotas:usize,music:bool,focus:bool,bell:bool,pet:bool,weather:bool)->Self {
+        fn place(cursor:&mut f32,width:f32)->f32 {let x=*cursor+width/2.0;*cursor+=width+CONTENT_GAP;x}
         let mut widths=WIDTHS.to_vec(); widths.resize(WIDTHS.len()+quotas.saturating_sub(3),27.0);
         let mut x=vec![None;widths.len()];let mut cursor=16.0;
         let count=quotas;
@@ -63,11 +67,12 @@ impl Layout {
                 CLOCK=>{
                     if pet {x[PET]=Some(place(&mut cursor,WIDTHS[PET]));}
                     x[slot]=Some(place(&mut cursor,WIDTHS[slot]));
+                    if weather {x[WEATHER]=Some(place(&mut cursor,WIDTHS[WEATHER]));}
                 },
                 QUOTA if count>0=>{
-                    let width=count as f32*27.0+(count-1) as f32*7.0;
+                    let width=count as f32*27.0+(count-1) as f32*CONTENT_GAP;
                     let left=place(&mut cursor,width)-width/2.0;
-                    for i in 0..count {x[quota_slot(i)]=Some(left+13.5+i as f32*34.0);}
+                    for i in 0..count {x[quota_slot(i)]=Some(left+13.5+i as f32*(27.0+CONTENT_GAP));}
                 },
                 _=>{},
             }
@@ -75,31 +80,42 @@ impl Layout {
         for (slot,on) in [(MUSIC,music&&!bell),(FOCUS,focus),(BELL,bell)] {
             if on {x[slot]=Some(place(&mut cursor,WIDTHS[slot]));}
         }
-        let width=cursor-12.0+16.0;
-        for value in x.iter_mut().flatten() {*value-=width/2.0;}
-        Self {width:width.max(96.0),x,widths,quotas}
+        let content=cursor-CONTENT_GAP-16.0;
+        for value in x.iter_mut().flatten() {*value-=16.0+content/2.0;}
+        Self {width:(content+32.0).max(96.0),x,widths,quotas}
     }
-    pub fn add_badge(&mut self){self.add_component(BADGE,18.0);}
+    pub fn add_badge(&mut self){self.add_component(BADGE,WIDTHS[BADGE]);}
     pub fn add_companion(&mut self,width:f32) {self.add_component(COMPANION,width);}
     fn add_component(&mut self,slot:usize,width:f32) {
-        let extra=width+12.0;
+        let left=self.x.iter().zip(&self.widths).filter_map(|(x,w)|x.map(|x|x-w/2.0)).reduce(f32::min);
+        let extra=width+CONTENT_GAP;
         for x in self.x.iter_mut().flatten(){*x+=extra/2.0;}
-        self.x[slot]=Some(-self.width/2.0-extra/2.0+16.0+width/2.0);
-        self.widths[slot]=width;self.width+=extra;
+        self.x[slot]=Some(left.map_or(0.0, |x| x-CONTENT_GAP/2.0));
+        self.widths[slot]=width;
+        self.fit_width();
     }
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
-    pub fn balance_tail(&mut self,position:usize,extra:f32){
-        let slot=quota_slot(position);
-        let Some(center)=self.x[slot] else{return;};
-        for (i,x) in self.x.iter_mut().enumerate(){if i!=slot{if let Some(x)=x{*x+=if *x<center{-extra/2.0}else{extra/2.0};}}}
-        self.widths[slot]+=extra;self.width+=extra;
+    pub fn widen(&mut self,slot:usize,extra:f32){
+        if let Some(&width)=self.widths.get(slot).filter(|_|extra>0.0) {self.set_width(slot,width+extra);}
     }
-    pub fn widen_clock(&mut self, extra:f32) {
-        let clock=self.x[CLOCK].unwrap();
-        for (slot,x) in self.x.iter_mut().enumerate() {
-            if slot!=CLOCK { if let Some(x)=x { *x+=if *x<clock {-extra/2.0}else{extra/2.0}; } }
-        }
-        self.width+=extra;
+    /// 槽宽随内容变化时，两侧等量移动以保持相邻间距。
+    pub fn set_width(&mut self,slot:usize,width:f32){
+        let Some(center)=self.x.get(slot).copied().flatten() else {return;};
+        let extra=width-self.widths[slot];
+        for (i,x) in self.x.iter_mut().enumerate(){if i!=slot{if let Some(x)=x{*x+=if *x<center{-extra/2.0}else{extra/2.0};}}}
+        self.widths[slot]=width;
+        self.fit_width();
+    }
+    fn fit_width(&mut self){
+        let half=self.x.iter().zip(&self.widths).filter_map(|(x,w)|x.map(|x|x.abs()+w/2.0)).fold(0.0,f32::max);
+        self.width=(2.0*half+32.0).max(96.0);
+    }
+    pub fn balance_tail(&mut self,position:usize,extra:f32){self.widen(quota_slot(position),extra);}
+    pub fn hide_clock(&mut self) {
+        let Some(center)=self.x[CLOCK].take() else{return;};
+        let removed=self.widths[CLOCK]+CONTENT_GAP;
+        for x in self.x.iter_mut().flatten() {*x+=if *x<center {removed/2.0}else{-removed/2.0};}
+        self.fit_width();
     }
     pub fn reorder(&mut self,order:&[usize]) {
         if !valid_order(order){return;}
@@ -109,26 +125,23 @@ impl Layout {
             let slots:Vec<usize>=if slot==QUOTA{self.quota_slots().collect()}else{vec![slot]};
             let left=slots.iter().filter_map(|&i|original[i].map(|x|x-self.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
             let right=slots.iter().filter_map(|&i|original[i].map(|x|x+self.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);
-            if left.is_finite(){groups.push((slot,slots,left,right));}
+            if left.is_finite(){groups.push((slots,left,right));}
         }
-        let gap=|left:usize,right:usize|if left==COMPANION || right==COMPANION{CONTENT_GAP}else{12.0};
-        let content=groups.iter().map(|(_,_,left,right)|right-left).sum::<f32>()
-            +groups.windows(2).map(|pair|gap(pair[0].0,pair[1].0)).sum::<f32>();
+        let content=groups.iter().map(|(_,left,right)|right-left).sum::<f32>()
+            +groups.len().saturating_sub(1) as f32*CONTENT_GAP;
         self.width=(content+32.0).max(96.0);
         let mut cursor=-content/2.0;
-        for (index,(_,slots,left,right)) in groups.iter().enumerate() {
-            for &i in slots {if let Some(x)=original[i]{self.x[i]=Some(cursor+x-left);}}
-            cursor+=right-left;
-            if let Some(next)=groups.get(index+1){cursor+=gap(groups[index].0,next.0);}
+        for (slots,left,right) in groups {
+            for i in slots {if let Some(x)=original[i]{self.x[i]=Some(cursor+x-left);}}
+            cursor+=right-left+CONTENT_GAP;
         }
     }
 
     /// 圆环换边经过时钟时，暂时淡出时钟，避免移动中相互遮挡。
     pub fn clearance(&self,slot:usize)->f32 {
         let Some(x)=self.x[slot] else{return 0.0;};
-        let distance=self.quota_slots().filter_map(|i|self.x[i].map(|other|(other-x).abs()-(self.widths[i]-27.0)/2.0)).fold(f32::INFINITY,f32::min);
-        let quota=if slot==CLOCK {smoothstep(34.0,44.0,distance)}else{smoothstep(22.0,34.0,distance)};
-        quota*self.pet_clearance(slot)
+        let gap=self.quota_slots().filter_map(|i|self.x[i].map(|other|(other-x).abs()-(self.widths[i]+self.widths[slot])/2.0)).fold(f32::INFINITY,f32::min);
+        smoothstep(-4.0,CONTENT_GAP-0.5,gap)*self.pet_clearance(slot)
     }
     pub fn pet_clearance(&self,slot:usize)->f32 {
         match (self.x[slot],self.x[PET]) {
@@ -145,7 +158,7 @@ pub(crate) struct Motion {
     initialized: bool,
 }
 impl Default for Motion {
-    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],companion_width:Spring::new(0.0,360.0,0.76),initialized:false}}
+    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);WIDTHS.len()],companion_width:Spring::new(0.0,360.0,0.76),initialized:false}}
 }
 impl Motion {
     pub fn step(&mut self,target:Layout,dt:f32,animate:bool) {
@@ -186,26 +199,56 @@ impl Motion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hidden_clock_closes_its_gap_in_custom_orders(){
+        for reverse in [false,true] {for count in [0,5] {
+            let mut order=DEFAULT_ORDER.to_vec();if reverse {order.reverse();}
+            let mut layout=Layout::new(true,count,true,true,false,true,true);
+            layout.reorder(&order);layout.widen(CLOCK,64.0);
+            let width=layout.width;let removed=layout.widths[CLOCK]+CONTENT_GAP;
+            layout.hide_clock();assert!(layout.x[CLOCK].is_none());
+            assert_eq!(layout.width,(width-removed).max(96.0));
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+            boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert!(boxes.windows(2).all(|p|(p[1].0-p[0].1-CONTENT_GAP).abs()<0.01),"关闭时间后相邻组件不应重叠");
+            let after=layout.x.clone();layout.hide_clock();assert_eq!(layout.x,after);
+        }}
+        let mut empty=Layout::new(false,0,false,false,false,false,false);
+        empty.hide_clock();assert_eq!(empty.width,96.0);assert!(empty.x.iter().all(Option::is_none));
+    }
+    #[test]
+    fn weather_can_be_reordered_independently_of_the_clock(){
+        let order=[WEATHER,FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY];
+        assert!(valid_order(&order),"天气应有独立的排列位置");
+        for quotas in 0..=5 {for enabled in [false,true] {
+            let mut layout=Layout::new(true,quotas,true,true,false,true,enabled);
+            layout.reorder(&order);layout.widen(WEATHER,18.0);layout.widen(CLOCK,40.0);
+            let positions:Vec<_>=order.iter().filter_map(|slot|layout.x[*slot]).collect();
+            assert!(positions.windows(2).all(|pair|pair[0]<pair[1]));
+            let boxes:Vec<_>=order.iter().flat_map(|&slot|if slot==QUOTA{layout.quota_slots().collect()}else{vec![slot]}).filter_map(|slot|layout.x[slot].map(|x|(x-layout.widths[slot]/2.0,x+layout.widths[slot]/2.0))).collect();
+            assert!(boxes.windows(2).all(|pair|(pair[1].0-pair[0].1-CONTENT_GAP).abs()<0.01),"排序和加宽后组件不能重叠");
+        }}
+    }
     #[test] fn deepseek_balance_follows_more_and_never_overlaps(){
-        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY]] {for quotas in 1..=6 {for battery in [false,true]{
-            let mut layout=Layout::new(battery,quotas,true,true,false,true);layout.reorder(&order);layout.balance_tail(quotas-1,76.0);layout.widen_clock(40.0);
-            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|{let width=layout.widths[i]+if i==CLOCK{40.0}else{0.0};(x-width/2.0,x+width/2.0)})).collect();boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
-            assert!(boxes.windows(2).all(|p|p[1].0-p[0].1>=6.9));assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY]] {for quotas in 1..=6 {for battery in [false,true]{
+            let mut layout=Layout::new(battery,quotas,true,true,false,true,false);layout.reorder(&order);layout.balance_tail(quotas-1,76.0);layout.widen(CLOCK,40.0);
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|{let width=layout.widths[i];(x-width/2.0,x+width/2.0)})).collect();boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert!(boxes.windows(2).all(|p|(p[1].0-p[0].1-CONTENT_GAP).abs()<0.01));assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
             assert!(layout.width<crate::app::WIN_W);
         }}}
     }
     #[test]
     fn clock_12h_keeps_components_separate_in_custom_orders(){
-        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY]] {
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY]] {
             for quotas in 0..=5 {
-                let mut layout=Layout::new(true,quotas,true,true,false,true);
-                layout.reorder(&order);layout.widen_clock(40.0);
+                let mut layout=Layout::new(true,quotas,true,true,false,true,false);
+                layout.reorder(&order);layout.widen(CLOCK,40.0);
                 let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|{
-                    let width=layout.widths[i]+if i==CLOCK {40.0}else{0.0};
+                    let width=layout.widths[i];
                     (x-width/2.0,x+width/2.0)
                 })).collect();
                 boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
-                assert!(boxes.windows(2).all(|p|p[1].0-p[0].1>=6.9));
+                assert!(boxes.windows(2).all(|p|(p[1].0-p[0].1-CONTENT_GAP).abs()<0.01));
                 assert!(boxes.first().unwrap().0>=-layout.width/2.0+15.9);
                 assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
             }
@@ -215,35 +258,75 @@ mod tests {
     fn custom_order_preserves_groups_and_hidden_positions(){
         assert!(!valid_order(&[0,0,2,6,7,9]));
         assert!(!valid_order(&[0,1,2]));
-        let order=[FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY];
+        let order=[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY];
         for battery in [false,true]{for count in 0..=5 {
-            let mut layout=Layout::new(battery,count,true,true,false,true);
+            let mut layout=Layout::new(battery,count,true,true,false,true,false);
             let width=layout.width;layout.reorder(&order);
             assert_eq!(layout.width,width);
             let positions:Vec<_>=order.iter().filter_map(|i|layout.x[*i]).collect();
             assert!(positions.windows(2).all(|p|p[0]<p[1]));
-            if count>1 {assert_eq!(layout.x[QUOTA+1].unwrap()-layout.x[QUOTA].unwrap(),34.0);}
+            if count>1 {assert_eq!(layout.x[QUOTA+1].unwrap()-layout.x[QUOTA].unwrap(),27.0+CONTENT_GAP);}
             let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
             boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
-            assert!(boxes.windows(2).all(|p|p[1].0-p[0].1>=6.9));
+            assert!(boxes.windows(2).all(|p|(p[1].0-p[0].1-CONTENT_GAP).abs()<0.01));
         }}
     }
     #[test]
     fn every_component_combination_fits_without_overlaps(){
-        for quotas in 0..=8 {for battery in [false,true] {for music in [false,true] {for focus in [false,true] {for bell in [false,true] {for pet in [false,true] {
-            let layout=Layout::new(battery,quotas,music,focus,bell,pet);
+        for quotas in 0..=8 {for battery in [false,true] {for music in [false,true] {for focus in [false,true] {for bell in [false,true] {for pet in [false,true] {for weather in [false,true] {
+            let mut layout=Layout::new(battery,quotas,music,focus,bell,pet,weather);
+            if bell {layout.add_badge();layout.add_companion(75.0);}
             let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
             boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
             assert_eq!(layout.quota_slots().count(),quotas);
             assert!(boxes.first().unwrap().0>=-layout.width/2.0+15.9);
             assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
-            assert!(boxes.windows(2).all(|pair|pair[1].0-pair[0].1>=6.9),"组件不能挤在一起：{layout:?}");
+            assert!(boxes.windows(2).all(|pair|(pair[1].0-pair[0].1-CONTENT_GAP).abs()<0.01),"组件不能挤在一起：{layout:?}");
             assert_eq!(layout.clearance(CLOCK),1.0);
-        }}}}}}
+        }}}}}}}
+    }
+    #[test]
+    fn weather_defaults_after_the_clock_and_preserves_custom_spacing(){
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY],[QUOTA,MUSIC,CLOCK,WEATHER,PET,FOCUS,BATTERY]] {
+            for quotas in 0..=3 {for battery in [false,true] {
+                let mut layout=Layout::new(battery,quotas,true,true,false,true,true);
+                layout.reorder(&order);
+                let (clock,weather)=match (layout.x[CLOCK],layout.x[WEATHER]) {(Some(c),Some(w))=>(c,w),_=>panic!("时钟与天气都应就位：{layout:?}")};
+                assert!(weather>clock+22.0+6.9,"天气应紧跟时钟右侧：时钟 {clock}，天气 {weather}");
+                // 相邻排列的时钟与天气保持标准组件间距。
+                assert!((weather-clock-(38.0+44.0)/2.0-CONTENT_GAP).abs()<0.01);
+                let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+                boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+                assert!(boxes.windows(2).all(|p|(p[1].0-p[0].1-CONTENT_GAP).abs()<0.01));
+                assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
+                assert!(layout.clearance(WEATHER)>0.99,"天气与额度环不应对撞：{layout:?}");
+            }}
+        }
+    }
+    #[test]
+    fn weather_chip_widens_symmetrically_without_overlaps(){
+        let mut layout=Layout::new(true,3,true,true,false,true,true);
+        let before=layout.x.clone();
+        layout.widen(WEATHER,18.0);
+        assert!((layout.widths[WEATHER]-56.0).abs()<0.01);
+        for (slot,x) in layout.x.iter().enumerate() {
+            match (slot,x) {
+                (crate::bar_layout::WEATHER,Some(_))=>{},
+                (_,Some(x))=>assert!((*x-before[slot].unwrap()).abs()>8.0,"其余槽位应被推开：{slot}"),
+                (_,None)=>{},
+            }
+        }
+        let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+        boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+        assert!(boxes.windows(2).all(|p|(p[1].0-p[0].1-CONTENT_GAP).abs()<0.01));
+        // 未就位的槽位调用 widen 应是空操作。
+        let mut empty=Layout::new(true,0,true,true,false,true,false);
+        let width=empty.width;empty.widen(WEATHER,20.0);
+        assert_eq!(empty.width,width);
     }
     #[test]
     fn replacing_battery_moves_continuously_and_supports_an_instant_state(){
-        let before=Layout::new(true,1,true,false,false,true);let after=Layout::new(false,1,true,false,false,true);
+        let before=Layout::new(true,1,true,false,false,true,false);let after=Layout::new(false,1,true,false,false,true,false);
         let mut motion=Motion::default();motion.step(before.clone(),0.0,true);
         motion.step(after.clone(),1.0/60.0,true);let mid=motion.current().x[QUOTA].unwrap();
         assert!(mid<before.x[QUOTA].unwrap()&&mid>after.x[QUOTA].unwrap());
@@ -256,7 +339,7 @@ mod tests {
 #[cfg(test)]
 #[test]
 fn companion_elastic_width_keeps_neighbor_spacing_during_growth_and_shrink(){
-    let layout=|width|{let mut layout=Layout::new(false,2,true,true,false,false);layout.add_companion(width);layout.reorder(&[BADGE,MUSIC,FOCUS,COMPANION,QUOTA,PET,BATTERY,CLOCK]);layout};
+    let layout=|width|{let mut layout=Layout::new(false,2,true,true,false,false,false);layout.add_companion(width);layout.reorder(&[BADGE,MUSIC,FOCUS,COMPANION,QUOTA,PET,BATTERY,CLOCK]);layout};
     let mut motion=Motion::default();motion.step(layout(57.5),0.0,true);
     for width in [45.0,97.0,149.0,57.5]{
         for _ in 0..120{

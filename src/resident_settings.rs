@@ -1,9 +1,9 @@
 use crate::{bar_layout::*,paint::{self,Card,H},theme::{self,W}};
 use eframe::egui::{self,Color32,RichText,Rect,Pos2,Vec2};
 
-pub(crate) fn preview_layout(order:&[usize],quotas:usize)->Layout {
-    let mut layout=Layout::new(true,quotas.max(1),true,true,false,true);
-    layout.add_badge();layout.add_companion(112.0);layout.reorder(order);layout
+fn preview_layout(order:&[usize],quotas:usize,companion_width:f32)->Layout {
+    let mut layout=Layout::new(true,quotas.max(1),true,true,false,true,true);
+    layout.add_badge();layout.add_companion(companion_width);layout.reorder(order);layout
 }
 
 impl crate::app::App {
@@ -18,10 +18,14 @@ impl crate::app::App {
         });
         ui.add_space(12.0);
         let indices=self.quota_bar_indices();let count=indices.len();
-        let mut layout=Layout::new(true,count.max(1),true,true,false,true);
-        layout.add_badge();layout.add_companion(if self.settings.companion_bar{self.companion_width(ui.ctx())}else{112.0});layout.reorder(&order);
+        let weather_snapshot=self.weather_pill().cloned();
+        let companion_width=if self.settings.companion_bar{self.companion_width(ui.ctx())}else{112.0};
+        let mut layout=preview_layout(&order,count,companion_width);
         for (position,extra) in self.quota_balance_layout(ui.ctx()){layout.balance_tail(position,extra);}
-        if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
+        let clock=self.settings.clock_text(&chrono::Local::now().format("%H:%M:%S").to_string());
+        let bounds=ui.max_rect();
+        layout.set_width(CLOCK,self.resident_clock_width(&Card::new(ui,bounds.min,bounds),&clock));
+        if let Some(width)=self.weather_pill_width(ui.ctx()){layout.set_width(WEATHER,width);}
         let (stage,_)=ui.allocate_exact_size(Vec2::new(ui.available_width(),100.0),egui::Sense::hover());
         ui.painter().rect_filled(stage,10.0,Color32::from_rgb(19,25,36));
         let scale=((stage.width()-28.0)/layout.width).min(1.0);
@@ -50,14 +54,14 @@ impl crate::app::App {
         let drag_key=ui.id().with("resident-last-target");
         let last_target=ui.ctx().data(|d|d.get_temp::<(usize,usize)>(drag_key));
         let mut hovered_target=None;
-        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",BADGE=>"徽标",COMPANION=>"智能体与待办",_=>"吉祥物"};
+        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",BADGE=>"徽标",COMPANION=>"智能体与待办",_=>"吉祥物"};
         for (index,&slot) in order.iter().enumerate(){
             let x=cx+layout.x[slot].unwrap();
-            let width=match slot{BADGE=>layout.widths[BADGE],COMPANION=>layout.widths[COMPANION],CLOCK=>if self.settings.clock_period!=0 {84.0}else{44.0},BATTERY=>20.0,PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,_=>{
+            let width=if slot!=QUOTA {layout.widths[slot]} else {
                 let left=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x-layout.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
                 let right=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x+layout.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);
                 right-left
-            }};
+            };
             let left=if slot==QUOTA{cx+layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x-layout.widths[i]/2.0)).fold(f32::INFINITY,f32::min)}else{x-width/2.0};
             let rect=card.rect(left-5.0,1.0,width+10.0,28.0);
             let response=ui.interact(rect,ui.id().with(("resident-icon",slot)),egui::Sense::click_and_drag()).on_hover_cursor(egui::CursorIcon::Grab);
@@ -72,13 +76,14 @@ impl crate::app::App {
             let dx=if is_dragged{pointer.map(|p|((p.x-origin.x)/scale-(left+width/2.0)).clamp(-left,layout.width-left-width)).unwrap_or(0.0)}else{0.0};
             if is_dragged {ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
             else if response.hovered(){ui.painter().rect_filled(rect,6.0,Color32::from_white_alpha(18));}
-            let active=match slot{BADGE=>self.settings.companion_badge,COMPANION=>self.settings.companion_bar,BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,_=>true};
+            let active=match slot{CLOCK=>self.settings.show_clock,WEATHER=>weather_snapshot.is_some(),BADGE=>self.settings.companion_badge,COMPANION=>self.settings.companion_bar,BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,_=>true};
             let c=card.shifted(dx,0.0).faded(if active||is_dragged{1.0}else{0.38}).ghost();
             match slot{
                 BADGE=>self.companion_badge_draw(&c,x,15.0),
                 COMPANION=>{let saved=(self.settings.companion_badge,self.settings.companion_bar);if !saved.0&&!saved.1{self.settings.companion_badge=true;self.settings.companion_bar=true;}self.companion_bar(&c,x,layout.widths[COMPANION]);(self.settings.companion_badge,self.settings.companion_bar)=saved;},
                 BATTERY=>paint::battery(&c,x,15.0,self.resident_power.0,self.resident_power.1,1.0),
-                CLOCK=>{let text=self.settings.clock_text(&chrono::Local::now().format("%H:%M:%S").to_string());let w=paint::clock_width(&c,&text,theme::size::PILL_CLOCK);self.vpn_clock(&c,x-w/2.0,5.0,w,21.0);paint::clock(&c,x-w/2.0,21.0,&text,theme::size::PILL_CLOCK);},
+                CLOCK=>{let w=paint::clock_width(&c,&clock,theme::size::PILL_CLOCK);self.vpn_clock(&c,x-w/2.0,5.0,w,21.0);paint::clock(&c,x-w/2.0,21.0,&clock,theme::size::PILL_CLOCK);},
+                WEATHER=>if let Some(snapshot)=weather_snapshot.as_ref(){self.paint_pill_weather(&c,x,&layout,snapshot);}else{crate::weather_ui::icon(&c,x,15.0,16.0,crate::weather::Kind::Partly);},
                 PET=>self.pet.draw(&c,x,self.t,self.skin_palette()),
                 MUSIC=>paint::playback_bars(&c,x,15.0,self.t,self.media.playing,theme::WHITE),
                 FOCUS=>crate::focus_bar::draw(&c,x,15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false),

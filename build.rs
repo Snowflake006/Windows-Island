@@ -40,10 +40,10 @@ fn main() {
         let out=PathBuf::from(env::var("OUT_DIR").unwrap()).join("daozai-icon.o");
         if Command::new("windres.exe").args(["app.rc","-O","coff","-o"]).arg(&out).status().map(|s|s.success()).unwrap_or(false){println!("cargo:rustc-link-arg={}",out.display());}
         // MinGW distributions do not always ship the Windows SQLite import library.
-        // Import only the three system entry points used by qq_toast_source.
+        // Import the system entry points used by the notification and music modules.
         let dir=PathBuf::from(env::var("OUT_DIR").unwrap());
         let def=dir.join("winsqlite3.def");
-        fs::write(&def,"LIBRARY winsqlite3.dll\nEXPORTS\nsqlite3_open_v2\nsqlite3_exec\nsqlite3_close\n").unwrap();
+        fs::write(&def,"LIBRARY winsqlite3.dll\nEXPORTS\nsqlite3_open_v2\nsqlite3_exec\nsqlite3_close\nsqlite3_busy_timeout\nsqlite3_prepare_v2\nsqlite3_step\nsqlite3_column_text\nsqlite3_column_bytes\nsqlite3_finalize\n").unwrap();
         let status=Command::new("dlltool.exe").arg("-d").arg(&def).arg("-l").arg(dir.join("libwinsqlite3.a")).status();
         if status.map(|s|s.success()).unwrap_or(false){println!("cargo:rustc-link-search=native={}",dir.display());}
         return;

@@ -11,8 +11,10 @@ foreach($path in $links){if((Test-Path -LiteralPath $path) -and $shell.CreateSho
 $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 Remove-ItemProperty -Path $runKey -Name Daozai -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Daozai' -ErrorAction SilentlyContinue
-foreach($name in @('daozai.exe','daozai-previous.exe','daozai-v0.2-backup.exe','THIRD_PARTY_NOTICES.txt','LICENSE','uninstall.ps1')){
+foreach($name in @('daozai.exe','daozai-previous.exe','daozai-v0.2-backup.exe','THIRD_PARTY_NOTICES.txt','LICENSE','uninstall.ps1','收集岛仔诊断.cmd','scripts\collect-diagnostics.ps1')){
     $path=Join-Path $installDir $name;if(Test-Path -LiteralPath $path){Remove-Item -LiteralPath $path}
 }
+$tools=Join-Path $installDir 'scripts'
+if((Test-Path -LiteralPath $tools) -and -not(Get-ChildItem -LiteralPath $tools -Force)){Remove-Item -LiteralPath $tools}
 if(-not(Get-ChildItem -LiteralPath $installDir -Force)){Remove-Item -LiteralPath $installDir}
 Write-Output 'Windows Island已卸载。待办、饮水记录和设置仍保存在本机用户数据目录中。'
