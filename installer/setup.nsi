@@ -10,9 +10,11 @@ Unicode true
   !define APP_ID "Daozai"
 !endif
 !ifndef APP_NAME
-  !define APP_NAME "岛仔"
+  !define APP_NAME "Windows Island"
 !endif
 !define UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_ID}"
+!define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
+!define STARTUP_APPROVED_KEY "Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run"
 Name "${APP_NAME}"
 OutFile "${OUTPUT_FILE}"
 InstallDir "$LOCALAPPDATA\Programs\${APP_ID}"
@@ -36,16 +38,16 @@ Var DesktopChoice
 Var AutoStartChoice
 Page custom InstallPage InstallPageLeave
 !insertmacro MUI_PAGE_INSTFILES
-!define MUI_FINISHPAGE_TITLE "岛仔已安装"
+!define MUI_FINISHPAGE_TITLE "${APP_NAME} 已安装"
 !define MUI_FINISHPAGE_TEXT "音乐、提醒和日常小事，现在都在桌面上的小岛里。"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\daozai.exe"
-!define MUI_FINISHPAGE_RUN_TEXT "打开岛仔"
+!define MUI_FINISHPAGE_RUN_TEXT "打开 ${APP_NAME}"
 !insertmacro MUI_PAGE_FINISH
-!define MUI_UNCONFIRMPAGE_TEXT_TOP "将卸载岛仔。设置、待办和连接记录会保留，重新安装后仍可使用。"
+!define MUI_UNCONFIRMPAGE_TEXT_TOP "将卸载 ${APP_NAME}。设置、待办和连接记录会保留，重新安装后仍可使用。"
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "SimpChinese"
-BrandingText "岛仔 · Daozai"
+BrandingText "${APP_NAME}"
 SetFont "Microsoft YaHei UI" 9
 
 Function .onInit
@@ -62,15 +64,17 @@ Function .onInit
   SetShellVarContext current
   SetRegView 64
   StrCpy $DesktopChoice 1
-  StrCpy $AutoStartChoice 0
+  StrCpy $AutoStartChoice 1
   ReadRegStr $0 HKCU "${UNINSTALL_KEY}" "InstallLocation"
   ${If} $0 != ""
     IfFileExists "$DESKTOP\${APP_NAME}.lnk" +2 0
       StrCpy $DesktopChoice 0
+    StrCpy $AutoStartChoice 0
   ${EndIf}
-  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_ID}"
+  ReadRegStr $0 HKCU "${RUN_KEY}" "${APP_ID}"
   ${If} $0 != ""
-    StrCpy $AutoStartChoice 1
+    Call ReadStartupApproval
+    StrCpy $AutoStartChoice $0
   ${EndIf}
   ; 静默安装使用同一组选项；/D 路径由 NSIS 自身处理。
   ${GetParameters} $0
@@ -86,8 +90,25 @@ Function .onInit
   ${EndIf}
 FunctionEnd
 
+; Explorer can disable a Run entry without deleting its command.
+Function ReadStartupApproval
+  StrCpy $0 1
+  System::Alloc 64
+  Pop $2
+  System::Call 'advapi32::RegGetValueW(p 0x80000001, w "${STARTUP_APPROVED_KEY}", w "${APP_ID}", i 8, p 0, p r2, *i 64) i .r1'
+  ${If} $1 == 0
+    System::Call '*$2(i .r3)'
+    IntOp $3 $3 & 0xff
+    ${If} $3 == 3
+    ${OrIf} $3 == 7
+      StrCpy $0 0
+    ${EndIf}
+  ${EndIf}
+  System::Free $2
+FunctionEnd
+
 Function InstallPage
-  !insertmacro MUI_HEADER_TEXT "欢迎使用岛仔" "Windows 顶部的桌面伙伴"
+  !insertmacro MUI_HEADER_TEXT "安装 ${APP_NAME}" "Windows 顶部的桌面伙伴"
   nsDialogs::Create 1018
   Pop $0
   InitPluginsDir
@@ -101,9 +122,7 @@ Function InstallPage
   Pop $0
   CreateFont $1 "Microsoft YaHei UI" 18 700
   SendMessage $0 ${WM_SETFONT} $1 0
-  ${NSD_CreateLabel} 112u 14u 188u 14u "v${APP_VERSION} · 升级保留设置和记录"
-  Pop $0
-  ${NSD_CreateLabel} 58u 34u 240u 20u "让重要的信息，轻轻出现在屏幕顶部。"
+  ${NSD_CreateLabel} 58u 34u 240u 20u "v${APP_VERSION} · 升级保留设置和记录"
   Pop $0
   ${NSD_CreateLabel} 0 58u 300u 16u "音乐歌词 · 邮件验证码 · 日程提醒 · AI 额度"
   Pop $0
@@ -117,7 +136,7 @@ Function InstallPage
   ${NSD_CreateCheckbox} 0 122u 150u 14u "创建桌面快捷方式"
   Pop $DesktopCheckbox
   ${NSD_SetState} $DesktopCheckbox $DesktopChoice
-  ${NSD_CreateCheckbox} 165u 122u 135u 14u "开机自启"
+  ${NSD_CreateCheckbox} 153u 122u 147u 14u "登录 Windows 后自动启动"
   Pop $AutoStartCheckbox
   ${NSD_SetState} $AutoStartCheckbox $AutoStartChoice
   GetDlgItem $0 $HWNDPARENT 1
@@ -207,6 +226,14 @@ Function ValidateDirectory
   IfErrors invalid
   GetFullPathName $INSTDIR "$INSTDIR"
   IfErrors invalid
+  ${If} $AutoStartChoice == 1
+    StrLen $0 '"$INSTDIR\daozai.exe"'
+    ${If} $0 > 260
+      MessageBox MB_OK|MB_ICONEXCLAMATION "此路径过长，无法启用登录自启。请选择更短的安装路径。" /SD IDOK
+      SetErrorLevel 1
+      Abort
+    ${EndIf}
+  ${EndIf}
   GetTempFileName $0 "$INSTDIR"
   IfErrors invalid
   Delete "$0"
@@ -267,18 +294,13 @@ Section "安装"
   ${Else}
     Delete "$DESKTOP\${APP_NAME}.lnk"
   ${EndIf}
-  ${If} $AutoStartChoice == 1
-    WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_ID}" '"$INSTDIR\daozai.exe"'
-  ${Else}
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_ID}"
-  ${EndIf}
   CreateShortcut "$SMPROGRAMS\${APP_NAME}.lnk" "$INSTDIR\daozai.exe"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}设置.lnk" "$INSTDIR\daozai.exe" "--settings"
   ; 岛仔打不开、卡死时的备用入口；能打开时用「设置 → 关于 → 收集诊断」。
   CreateShortcut "$SMPROGRAMS\收集${APP_NAME}诊断.lnk" "$INSTDIR\daozai.exe" "--collect-diagnostics" "$INSTDIR\daozai.exe" 0
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME} Daozai"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayName" "${APP_NAME}"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayVersion" "${APP_VERSION}"
-  WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "岛仔"
+  WriteRegStr HKCU "${UNINSTALL_KEY}" "Publisher" "Windows Island"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\daozai.exe,0"
   WriteRegStr HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
@@ -294,6 +316,25 @@ Section "安装"
   IntOp $0 $0 + 8
   WriteRegDWORD HKCU "${UNINSTALL_KEY}" "EstimatedSize" $0
   Delete "$INSTDIR\uninstall.ps1"
+  ${If} $AutoStartChoice == 1
+    ClearErrors
+    WriteRegStr HKCU "${RUN_KEY}" "${APP_ID}" '"$INSTDIR\daozai.exe"'
+    IfErrors startup_error
+    Call ReadStartupApproval
+    ${If} $0 == 0
+      ClearErrors
+      DeleteRegValue HKCU "${STARTUP_APPROVED_KEY}" "${APP_ID}"
+      IfErrors startup_error
+    ${EndIf}
+  ${Else}
+    DeleteRegValue HKCU "${RUN_KEY}" "${APP_ID}"
+  ${EndIf}
+  Goto installed
+  startup_error:
+    MessageBox MB_OK|MB_ICONEXCLAMATION "${APP_NAME} 已安装，但未能启用登录自启。可在应用设置中重试。" /SD IDOK
+    SetErrorLevel 1
+    Abort
+  installed:
 SectionEnd
 
 Function un.onInit
@@ -317,9 +358,10 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${APP_NAME}.lnk"
   Delete "$SMPROGRAMS\${APP_NAME}设置.lnk"
   Delete "$SMPROGRAMS\收集${APP_NAME}诊断.lnk"
-  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_ID}"
+  ReadRegStr $0 HKCU "${RUN_KEY}" "${APP_ID}"
   ${If} $0 == '"$INSTDIR\daozai.exe"'
-    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "${APP_ID}"
+    DeleteRegValue HKCU "${RUN_KEY}" "${APP_ID}"
+    DeleteRegValue HKCU "${STARTUP_APPROVED_KEY}" "${APP_ID}"
   ${EndIf}
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
   ; 只移除空的安装目录，用户数据和用户自行放入的文件都保留。

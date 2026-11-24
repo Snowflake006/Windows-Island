@@ -6,6 +6,7 @@ $name = '岛仔安装测试-' + $id.Substring(15,8)
 $root = Join-Path $project ('target\' + $id)
 $installed = Join-Path $root 'installed files'
 $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\' + $id
+$approved = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run'
 $data = Join-Path $env:APPDATA $id
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 $sentinel = Join-Path $data 'settings.txt'
@@ -27,9 +28,10 @@ function Run-Setup {
     if (-not $process.WaitForExit(30000) -or $process.ExitCode -ne 0) { throw '安装失败或超时' }
 }
 function Assert-Installed {
-    param([bool]$Desktop = $true, [bool]$AutoStart = $false)
+    param([bool]$Desktop = $true, [bool]$AutoStart = $true)
     $entry = Get-ItemProperty -LiteralPath $key
     if ($entry.InstallLocation -ne $installed -or $entry.DisplayVersion -ne '9.8.7') { throw '安装注册信息不正确' }
+    if ($entry.DisplayName -ne $name) { throw 'Windows 应用名称不正确' }
     if ($entry.UninstallString -ne ('"' + (Join-Path $installed 'Uninstall.exe') + '"')) { throw '卸载命令不正确' }
     if (-not ($entry.EstimatedSize -gt 0 -and $entry.EstimatedSize -lt 100000)) { throw "登记大小不正确：$($entry.EstimatedSize) KB" }
     if ((Get-FileHash (Join-Path $installed 'daozai.exe')).Hash -ne (Get-FileHash $fixture).Hash) { throw '程序复制不正确' }
@@ -56,7 +58,7 @@ function Assert-Installed {
 try {
     Run-Setup
     Assert-Installed
-    Write-Output '通过：首次安装、含空格路径、快捷方式和卸载注册'
+    Write-Output '通过：首次安装默认自启、含空格路径、快捷方式和卸载注册'
     Set-Content -LiteralPath (Join-Path $installed 'daozai.exe') -Value 'previous-version'
     Set-Content -LiteralPath (Join-Path $installed 'uninstall.ps1') -Value 'previous-uninstaller'
     Set-ItemProperty -LiteralPath $key -Name UninstallString -Value 'powershell.exe legacy-uninstall.ps1'
@@ -70,14 +72,24 @@ try {
     Run-Setup -UseRegisteredPath
     Assert-Installed -Desktop $false -AutoStart $true
     Write-Output '通过：升级保留现有路径和选项'
+    New-Item -Path $approved -Force | Out-Null
+    New-ItemProperty -LiteralPath $approved -Name $id -PropertyType Binary -Value ([byte[]]@(3,0,0,0,0,0,0,0,0,0,0,0)) -Force | Out-Null
+    Run-Setup -UseRegisteredPath
+    Assert-Installed -Desktop $false -AutoStart $false
+    Run-Setup -Options @('/AUTOSTART=1') -UseRegisteredPath
+    Assert-Installed -Desktop $false -AutoStart $true
+    if ((Get-ItemProperty -LiteralPath $approved).PSObject.Properties[$id]) { throw '显式启用后系统启动禁用记录仍在' }
+    Write-Output '通过：升级尊重 Windows 启动禁用，显式启用后恢复自启'
     Run-Setup -Options @('/DESKTOP=1','/AUTOSTART=0')
-    Assert-Installed
+    Assert-Installed -AutoStart $false
+    Run-Setup -UseRegisteredPath
+    Assert-Installed -AutoStart $false
     Write-Output '通过：恢复桌面快捷方式、关闭自启'
     $mutex = [Threading.Mutex]::new($false, "Local\$id.SingleInstance")
     try {
         $process = Start-Process -FilePath $setup -ArgumentList @('/S',"/D=$installed") -WindowStyle Hidden -PassThru
         if (-not $process.WaitForExit(30000) -or $process.ExitCode -eq 0) { throw '运行中的程序未阻止覆盖安装' }
-        Assert-Installed
+        Assert-Installed -AutoStart $false
         Write-Output '通过：运行中拒绝覆盖程序'
     } finally { $mutex.Dispose() }
     Run-Setup -Options @('/AUTOSTART=1')
@@ -111,6 +123,7 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $shared 'other.txt')) -or -not (Test-Path -LiteralPath (Join-Path $shared 'Other App\big.bin'))) { throw '卸载误删共享文件夹里的其他软件' }
     Write-Output '通过：卸载不影响共享文件夹里的其他软件'
 } finally {
+    Remove-ItemProperty -LiteralPath $approved -Name $id -ErrorAction SilentlyContinue
     # 清理本测试的独立安装，避免失败时残留桌面快捷方式和自启项。
     if (Test-Path -LiteralPath $key) {
         $cleanupDirectory = (Get-ItemProperty -LiteralPath $key).InstallLocation
