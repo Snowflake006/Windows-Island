@@ -9398,6 +9398,60 @@ fn vpn_latency_hover_persists_until_leaving_the_capsule() {
 }
 
 #[test]
+fn vpn_latency_ignores_the_clock_replaced_by_lyrics() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.pet=false;
+    h.app.settings.island_lyrics=true;
+    h.companion.vpn=crate::companion::Vpn{connected:true,delay:Some(143.0),text:String::new()};
+    h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"Track".into(),artist:"Artist".into(),position:7.0,duration:120.0,..Default::default()};
+    for _ in 0..70 {h.frame(vec![]);}
+    let previous_clock=h.app.vpn_clock_bounds.unwrap().center();
+    h.media.playing=true;
+    h.app.set_lyrics("Track","Artist",120.0,crate::lyrics::parse_lrc("[00:05]The people we used to be"));
+    h.cursor=Some(previous_clock);
+    for _ in 0..6 {
+        h.frame(vec![egui::Event::PointerMoved(previous_clock)]);
+        assert!(h.app.island_lyric().is_some());
+        assert!(!h.app.open);
+        assert!(h.app.vpn_clock_bounds.is_none(),"收起的歌词岛不应保留时钟悬停区");
+        assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="VPN 节点延迟 143 ms")));
+    }
+    h.hover(H::local(200.0,15.0),1.0);
+    assert!(h.app.open,"歌词岛仍应正常展开");
+    assert!(h.app.vpn_clock_bounds.is_some(),"展开后的可见时钟仍应支持 VPN 悬停");
+}
+
+#[test]
+fn wide_pill_keeps_rounded_ends_without_rebounding_into_the_panel() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.island_shape=crate::model::IslandShape::Pill;
+    h.frame(vec![]);
+    h.app.w.snap(570.0);
+    h.app.h.snap(crate::app::BAR_H);
+    h.app.show_page(1);
+    let mut previous=570.0;
+    let mut checked=0;
+    for _ in 0..90 {
+        h.frame(vec![]);
+        let width=h.app.w.pos;
+        assert!(width>=crate::app::PW-0.1 && width<=previous+0.1,"长岛宽度应平滑收敛至展开宽度");
+        previous=width;
+        if width>crate::app::PW+85.0 && h.app.h.pos>42.0 {
+            let body=h.shapes.iter().find_map(|s|match &s.shape {
+                egui::Shape::Rect(r) if (r.rect.width()-width).abs()<0.1 && r.fill==egui::Color32::BLACK=>Some(r),
+                _=>None,
+            }).expect("应绘制长岛胶囊");
+            assert!(body.corner_radius.nw as f32>=body.rect.height()*0.44,"展开初段应保留圆润的两端");
+            checked+=1;
+        }
+    }
+    assert!(checked>0,"应覆盖仍较宽且已经开始增高的帧");
+    assert!((previous-crate::app::PW).abs()<0.1);
+}
+
+#[test]
 fn vpn_status_leaves_shelf_and_weather_actions_clear_and_clickable() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();

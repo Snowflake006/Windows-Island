@@ -154,7 +154,8 @@ impl App {
         if k>0.01 && self.settings.vpn_tint {
             c.faded(k.min(1.0)).fill(x-VPN_CLOCK_INSET,y,w+2.0*VPN_CLOCK_INSET,h,h/2.0,color);
         }
-        (vpn.connected && self.settings.vpn_tint && k>0.01)
+        // The lyric and clock headers coexist briefly during their cross-fade.
+        (vpn.connected && self.settings.vpn_tint && c.painter.opacity()*k.min(1.0)>=0.5)
             .then(||c.rect(x-VPN_CLOCK_INSET,y,w+2.0*VPN_CLOCK_INSET,h).intersect(c.painter.clip_rect()))
             .filter(egui::Rect::is_positive)
     }

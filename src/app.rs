@@ -1537,8 +1537,7 @@ impl App {
         self.notice=None;
         self.go(page,1.0);
         self.open=true; self.forced_open_until=self.t+4.0;
-        self.w.tune(OPEN_W.0,OPEN_W.1);self.h.tune(OPEN_H.0,OPEN_H.1);
-        self.w.target=PW;self.h.target=self.expanded_height();
+        self.target_open_size();
     }
     pub(crate) fn window_layout(&self)->std::sync::MutexGuard<'_,crate::settings_window::State>{
         self.settings_window.lock().unwrap_or_else(|e|e.into_inner())
@@ -1958,7 +1957,8 @@ impl App {
             && !ctx.input(|i|i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)));
         // Hovering the collapsed VPN capsule keeps that capsule under the pointer.
         let over_vpn_clock=self.vpn_clock_bounds.take().is_some_and(|rect|
-            self.settings.vpn_clock && self.settings.vpn_tint && self.companion.snapshot.vpn.connected
+            !(self.island_lyrics_active() && !self.open)
+            && self.settings.vpn_clock && self.settings.vpn_tint && self.companion.snapshot.vpn.connected
             && env.cursor.is_some_and(|cursor|rect.contains(cursor)));
         let page_hover=inside || self.page_scroll_area.is_some();
         let on_notice=env.cursor.is_some_and(|c|self.messenger_badge_rect(win,self.island_rect(win,self.w.pos,self.h.pos)).is_some_and(|r|r.contains(c)) || self.notice_rect(cx,top).is_some_and(|r|r.contains(c))||self.notice_details_rect(cx,top).is_some_and(|r|r.contains(c)));
@@ -2066,7 +2066,11 @@ impl App {
         let flare = if minimal_pill || pill { 0.0 } else { lerp(5.0, FLARE, pc) };
         let k = (w / PW).clamp(0.3, 1.1);
         let thickness = if side { crate::side_dock::SIDE_BAR_W } else { BAR_H };
-        let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill { (w.min(h) * 0.5).min(lerp(thickness * 0.5, 26.0, pc)) } else { lerp(12.5, RAD * k.min(1.0), pc) };
+        let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill {
+            // Keep broad ends rounded while a long resident row contracts into the panel.
+            let wide_rounding=if side {0.0} else {18.0*smoothstep(PW,PW+100.0,w)*smoothstep(0.0,0.18,pc)};
+            (w.min(h)*0.5).min(lerp(thickness*0.5,26.0,pc)+wide_rounding)
+        } else { lerp(12.5, RAD * k.min(1.0), pc) };
         let flare_h = lerp(8.0, FLARE_H, pc);
         let thick = glass::thickness(PH);
         let glass_skin = self.settings.skin.is_glass();
@@ -2247,6 +2251,9 @@ impl App {
         }
         // 原生裁剪还需包含悬停提示；只扩大绘制区域，保持桌面点击穿透。
         let mut tooltips=Vec::new();
+        if !self.open && self.island_lyrics_active() {
+            self.vpn_clock_bounds=None;
+        }
         if let Some(rect)=self.position_drag.is_none().then(||self.vpn_tooltip(&ctx,env,ui.max_rect())).flatten(){
             region=region.union(rect.expand(4.0));
             tooltips.push(rect);
@@ -2519,8 +2526,7 @@ impl App {
     pub(crate) fn reveal_unread(&mut self){
         self.notice=None;
         self.open=true; self.forced_open_until=self.t+4.0;
-        self.w.tune(OPEN_W.0,OPEN_W.1);self.h.tune(OPEN_H.0,OPEN_H.1);
-        self.w.target=PW;self.h.target=self.expanded_height();
+        self.target_open_size();
     }
     fn notice_rect(&self,cx:f32,top:f32)->Option<Rect>{
         if !self.compact_notices(){return None;}
@@ -2832,6 +2838,14 @@ impl App {
         self.drag_lift.vel=self.drag_lift.vel.max(4.0);
     }
 
+    fn target_open_size(&mut self) {
+        let contracting=!self.side() && self.w.pos>PW;
+        self.w.tune(OPEN_W.0,if contracting {1.0} else {OPEN_W.1});
+        self.h.tune(OPEN_H.0,if contracting {1.0} else {OPEN_H.1});
+        self.w.target=PW;
+        self.h.target=self.expanded_height();
+    }
+
     /// 悬停状态机：意图缓冲 → 弹簧展开 → 离开延迟 → 临界阻尼收起；全程可打断。
     fn morph(&mut self, want: bool, inside: bool, t: f64, dt: f32) {
         let (bw, bh) = self.base_size();
@@ -2853,13 +2867,10 @@ impl App {
             let intent=if self.effective_minimal() {MINIMAL_HOVER_INTENT}else{HOVER_INTENT};
             if !self.open && (self.drag_hot || t - since >= intent) {
                 self.open = true;
-                self.w.tune(OPEN_W.0, OPEN_W.1);
-                self.h.tune(OPEN_H.0, OPEN_H.1);
-                self.w.target = PW;
-                self.h.target = self.expanded_height();
+                self.target_open_size();
                 if self.drag_hot {
                     // 拖入不等缓冲，直接给一点初速度，30 ms 内就能看到形变
-                    self.w.vel = self.w.vel.max(600.0);
+                    if self.w.pos<PW { self.w.vel=self.w.vel.max(600.0); }
                     self.h.vel = self.h.vel.max(260.0);
                 }
             } else if !self.open {
