@@ -124,15 +124,24 @@ fn weather_week_keeps_each_forecast_date_visible(){
 fn weather_today_opens_solar_details_and_returns_to_forecast(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,sunrise:Some("06:52".into()),sunset:Some("17:21".into()),sun_times:None,..Default::default()});
-    h.app.show_page(8);h.hover(H::local(250.0,65.0),1.0);h.click(H::local(100.0,75.0));h.hover(H::local(100.0,75.0),0.3);
+    let has_refresh=|h:&H|h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)
+        if matches!(t.galley.text(),"刷新"|"稍后刷新"|"更新中")));
+    h.app.show_page(8);h.hover(H::local(250.0,65.0),1.0);
+    assert!(has_refresh(&h),"天气总览应显示刷新");
+    h.click(H::local(100.0,75.0));
+    assert!(!has_refresh(&h),"进入日照的第一帧就应隐藏刷新");
+    h.hover(H::local(100.0,75.0),0.3);
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("返回天气"))),"点击当天区域后应进入日出日落视图");
+    assert!(!has_refresh(&h),"日照页上只显示返回天气");
     for phrase in ["日出","日落","06:52","17:21","日照进度待更新"] {
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains(phrase))),"旧缓存日照视图缺少 {phrase}");
     }
     assert!(!h.app.weather.loading,"浏览日照视图不应额外发起网络请求");
     h.click(H::local(80.0,44.0));
     assert!(!h.app.weather.solar_open);
+    assert!(!has_refresh(&h),"返回动画中的日照按钮仍可见时不应显示刷新");
     h.hover(H::local(80.0,44.0),0.3);
+    assert!(has_refresh(&h),"返回后应恢复刷新");
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="日出 06:52")),"返回后应显示天气视图的日照入口");
 }
 
