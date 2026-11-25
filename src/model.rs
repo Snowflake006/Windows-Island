@@ -188,6 +188,9 @@ impl Dock {
 pub const ISLAND_SIZE_MIN: u32 = 80;
 pub const ISLAND_SIZE_MAX: u32 = 140;
 pub const ISLAND_SIZE_STEP: u32 = 5;
+pub const ISLAND_SIZE_DEFAULT: u32 = 100;
+const ISLAND_SCALE_BASE: f32 = 0.9;
+pub(crate) const ISLAND_SIZE_BASIS_KEY: &str = "island_size_basis";
 /// 水平位置：-100 = 最左，0 = 居中，100 = 最右（按可移动范围的百分比）。
 pub const ISLAND_OFFSET_MAX: i32 = 100;
 
@@ -300,7 +303,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_clock: true, show_battery: true, show_weather: true, companion_badge:true, badge_style:0, companion_labels:true, companion_todos:true, companion_max_icons:4, companion_done_seconds:3, unlock_seconds:3, vpn_tint:true, companion_bar:true, vpn_clock:true, unlock_feedback:true,  clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: ISLAND_SIZE_DEFAULT, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_clock: true, show_battery: true, show_weather: true, companion_badge:true, badge_style:0, companion_labels:true, companion_todos:true, companion_max_icons:4, companion_done_seconds:3, unlock_seconds:3, vpn_tint:true, companion_bar:true, vpn_clock:true, unlock_feedback:true,  clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
     }
 }
 
@@ -309,7 +312,7 @@ impl Settings {
 
     /// 主窗口（灵动岛）的界面缩放倍率。
     pub fn island_scale(&self) -> f32 {
-        island_size_value(self.island_size) as f32 / 100.0
+        ISLAND_SCALE_BASE * (island_size_value(self.island_size) as f32 / ISLAND_SIZE_DEFAULT as f32)
     }
 
     /// 水平位置，-1..=1。
@@ -337,6 +340,7 @@ impl Settings {
 
     pub(crate) fn from_pairs(pairs: Vec<(String,String)>) -> Self {
         let mut s = Self::default();
+        let mut uses_current_size_basis = false;
         for (k, v) in pairs {
             match k.as_str() {
                 "settings_theme" => s.settings_theme=crate::settings_theme::SettingsTheme::parse(&v),
@@ -349,7 +353,8 @@ impl Settings {
                 "island_shape" => s.island_shape = IslandShape::parse(&v),
                 "dock" => s.dock = Dock::parse(&v),
                 "glass_blur" => s.glass_blur = v != "0",
-                "island_size" => s.island_size = island_size_value(v.parse::<u32>().unwrap_or(100)),
+                "island_size" => s.island_size = island_size_value(v.parse().unwrap_or(ISLAND_SIZE_DEFAULT)),
+                ISLAND_SIZE_BASIS_KEY => uses_current_size_basis = v == "90",
                 "island_offset" => s.island_offset = v.parse::<i32>().unwrap_or(0).clamp(-ISLAND_OFFSET_MAX, ISLAND_OFFSET_MAX),
                 "oled_shift" => s.oled_shift = v != "0",
                 "pet" => s.pet = v == "1" || v.eq_ignore_ascii_case("true"),
@@ -444,6 +449,10 @@ impl Settings {
                 _ => {}
             }
         }
+        // The former 90% setting is the same physical size as the new default.
+        if !uses_current_size_basis && s.island_size == 90 {
+            s.island_size = ISLAND_SIZE_DEFAULT;
+        }
         if !s.visible_pages.contains(&true) { s.visible_pages[0]=true; }
         // 旧版只有一个指定城市：迁移进已保存列表，升级后下拉框里能直接看到它。
         if let Some(position)=s.weather_position.clone().filter(|p|p.label==s.weather_city) {
@@ -467,6 +476,7 @@ impl Settings {
                 ("dock".into(),self.dock.key().into()),
                 ("glass_blur".into(),(self.glass_blur as u8).to_string()),
                 ("island_size".into(),island_size_value(self.island_size).to_string()),
+                (ISLAND_SIZE_BASIS_KEY.into(),"90".into()),
                 ("island_offset".into(),self.island_offset.clamp(-ISLAND_OFFSET_MAX,ISLAND_OFFSET_MAX).to_string()),
                 ("oled_shift".into(),(self.oled_shift as u8).to_string()),
                 ("settings_theme".into(),self.settings_theme.key().into()),
@@ -923,9 +933,22 @@ mod tests {
         for shape in IslandShape::ALL { assert_eq!(IslandShape::parse(shape.key()), shape); }
         assert_eq!(Settings::default().island_shape, IslandShape::Notch);
         let mut s = Settings::default();
-        assert_eq!((s.skin, s.glass_blur, s.island_scale(), s.island_offset_ratio()), (Skin::Classic, true, 1.0, 0.0));
+        assert_eq!((s.skin, s.glass_blur, s.island_scale(), s.island_offset_ratio()), (Skin::Classic, true, 0.9, 0.0));
         s.island_size = 125; s.island_offset = -250;
-        assert_eq!((s.island_scale(), s.island_offset_ratio()), (1.25, -1.0));
+        assert_eq!((s.island_scale(), s.island_offset_ratio()), (1.125, -1.0));
+    }
+
+    #[test]
+    fn island_size_migration_preserves_former_ninety_percent_size() {
+        let legacy = |value: &str| Settings::from_pairs(vec![("island_size".into(), value.into())]);
+        let mut settings = legacy("90");
+        assert_eq!(settings.island_size, ISLAND_SIZE_DEFAULT);
+        assert_eq!(settings.island_scale(), 0.9);
+        assert_eq!(legacy("100").island_scale(), 0.9);
+        settings.island_size = 90;
+        let restored = Settings::from_pairs(settings.pairs());
+        assert_eq!(restored.island_size, 90);
+        assert!((restored.island_scale() - 0.81).abs() < f32::EPSILON);
     }
 
     #[test]

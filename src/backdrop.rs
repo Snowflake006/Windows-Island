@@ -18,6 +18,7 @@ struct Shared {
 pub struct Sampler {
     shared: Arc<Mutex<Shared>>,
     stop: Arc<AtomicBool>,
+    thread: Option<std::thread::Thread>,
 }
 
 impl Sampler {
@@ -25,7 +26,7 @@ impl Sampler {
         let shared = Arc::new(Mutex::new(Shared::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let (state, flag) = (shared.clone(), stop.clone());
-        let _ = std::thread::Builder::new().name("daozai-backdrop".into()).spawn(move || {
+        let thread = std::thread::Builder::new().name("daozai-backdrop".into()).spawn(move || {
             while !flag.load(Ordering::Relaxed) {
                 let points = state.lock().map(|s| s.points.clone()).unwrap_or_default();
                 if !points.is_empty() {
@@ -34,15 +35,10 @@ impl Sampler {
                         s.color = Some(color);
                     }
                 }
-                for _ in 0..15 {
-                    if flag.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
+                std::thread::park_timeout(Duration::from_millis(1500));
             }
-        });
-        Self { shared, stop }
+        }).ok().map(|handle| handle.thread().clone());
+        Self { shared, stop, thread }
     }
 
     /// 采样点（屏幕物理坐标）。
@@ -62,6 +58,7 @@ impl Sampler {
 impl Drop for Sampler {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = &self.thread { thread.unpark(); }
     }
 }
 

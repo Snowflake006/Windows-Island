@@ -41,7 +41,11 @@ impl App {
         let mut items = Vec::new();
         if self.settings.show_clock {items.push(SideItem::Clock);}
         if self.weather_pill().is_some() {items.push(SideItem::Weather);}
-        if self.settings.companion_badge || self.companion_slot_enabled(){items.insert(0,SideItem::Companion(if self.companion.greeting(self.t){44.0}else{(if self.settings.companion_badge{24.0}else{0.0})+if self.settings.companion_bar{self.companion.visible.len().min(self.companion.limit()) as f32*24.0}else{0.0}}));}
+        if self.settings.companion_badge || self.companion_slot_enabled(){
+            let rows=if self.companion_side_idle(){1}else if self.settings.companion_bar{self.resident_agents().len().min(self.companion.limit())}else{0};
+            let height=if self.companion.greeting(self.t){44.0}else{(if self.settings.companion_badge{24.0}else{0.0})+rows as f32*24.0};
+            if height>0.0{items.insert(0,SideItem::Companion(height));}
+        }
         if self.settings.show_battery && self.resident_power.0.is_some() { items.push(SideItem::Battery); }
         if self.media.is_music() { items.push(SideItem::Music); }
         if self.pomo.running { items.push(SideItem::Focus); }

@@ -1,6 +1,6 @@
 [package]
 name = "daozai"
-version = "2.0.2"
+version = "2.0.3"
 edition = "2021"
 license = "MIT"
 description = "Windows Island：桌面状态与效率助手"
@@ -30,6 +30,7 @@ imap-proto = { path = "vendor/imap-proto" }
 eframe = { path = "vendor/eframe" }
 egui = { path = "vendor/egui" }
 egui-wgpu = { path = "vendor/egui-wgpu" }
+wgpu-hal = { path = "vendor/wgpu-hal" }
 ureq = { path = "vendor/ureq" }
 
 [dependencies]
@@ -67,6 +68,8 @@ windows = { version = "0.58", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
   "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
   "Win32_System_LibraryLoader",
   "Win32_System_Memory",
   "Win32_System_Com",

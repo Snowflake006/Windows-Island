@@ -266,8 +266,13 @@ impl App {
 
     // ================= 专注（番茄钟） =================
     pub(crate) fn page_focus(&mut self, c: &Card, _env: &Env) {
-        if c.hit(90.0,8.0,42.0,21.0,"focus-settings").on_hover_text("专注设置").clicked(){self.open_settings_category(2);}
-        c.text(111.0,23.0,"设置",10.5,W::Regular,theme::GRAY,H::Center);
+        let vpn=self.vpn_status_space();
+        let header=c.shifted(0.0,-vpn);
+        let y=if vpn>0.0{34.0}else{30.0};
+        let button=header.hit(24.0,y,44.0,19.0,"focus-settings")
+            .on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("专注设置");
+        header.header_action(&button,egui::Rect::from_min_size(egui::pos2(24.0,y),egui::vec2(44.0,19.0)),"设置",true);
+        if button.clicked(){self.open_settings_category(2);}
         let (rx, ry, rr) = (79.0, 74.0, 32.0);
         let frac = self.ring_shown.pos.clamp(0.0, 1.0);
         let run = c.ui.ctx().animate_bool_with_time(egui::Id::new("pomo-run"), self.pomo.running, 0.3);
@@ -653,24 +658,20 @@ impl App {
         x + total
     }
 
-    pub(crate) fn page_shelf(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+    pub(crate) fn page_shelf(&mut self, c: &Card, cmds: &mut Vec<Cmd>) {
         let n = self.shelf.items.len();
         let drag = self.drag_a;
         // 拖文件进来时回到「文件」分栏。
         if drag > 0.002 { self.shelf_tab = 0; }
-        self.shelf_tabs(c, 13.0);
+        let tabs_right=self.shelf_tabs(c, 13.0);
         if self.shelf_tab == 1 {
-            self.page_clipboard(c, env, cmds);
+            self.page_clipboard(c,tabs_right);
             return;
         }
-        let add_x=if self.vpn_status_space()>0.0 {139.0}else{311.0};
-        let add=c.hit(add_x,8.0,38.0,22.0,"shelf-add").on_hover_text("从电脑选择文件");
-        c.text(add_x+33.0,23.0,"添加",size::SMALL,W::Regular,theme::GRAY,H::Right);
-        if add.clicked(){cmds.push(Cmd::AddFiles);}
         if n>5 {c.text(209.5,121.0,&format!("{}–{} / {n} · 滚轮查看",self.shelf_first+1,(self.shelf_first+5).min(n)),10.5,W::Regular,theme::DIM,H::Center);}
 
         if n > 0 {
-            // 「添加」左边的「清空」：第一次点变红，3 秒内再点才真正清空。
+            // 第一次点变红，3 秒内再点才真正清空。
             // 「确认」与「清空」同宽，不会挤到顶栏时间。
             let confirming = self.confirm_clear.is_some();
             let label = if confirming { "确认" } else { "清空" };
@@ -702,8 +703,8 @@ impl App {
             let a = 1.0 - drag;
             if a > 0.0 {
                 let ec = body.faded(a);
-                ec.dashed(42.0, 32.0, 335.0, 91.0, 12.0, 1.2, Color32::from_gray(70), 0.0);
-                paint::tray(&ec, 209.5, 60.0, 28.0, 0.0, Color32::from_gray(200), Color32::from_gray(80));
+                ec.dashed(42.0, 39.0, 335.0, 84.0, 12.0, 1.2, Color32::from_gray(70), 0.0);
+                paint::tray(&ec, 209.5, 63.0, 28.0, 0.0, Color32::from_gray(200), Color32::from_gray(80));
                 ec.text(209.5, 93.0, "把文件拖到这儿", 12.0, W::Semibold, theme::WHITE, H::Center);
                 ec.text(209.5, 108.0, "只记位置，不复制文件 · 点一下打开", size::TINY, W::Regular, theme::GRAY, H::Center);
             }
@@ -781,7 +782,7 @@ impl App {
     }
 
     // ================= 剪贴板（置物架第二个分栏） =================
-    fn page_clipboard(&mut self, c: &Card, _env: &Env, _cmds: &mut Vec<Cmd>) {
+    fn page_clipboard(&mut self, c: &Card, tabs_right:f32) {
         if !self.settings.clipboard_history {
             c.dashed(42.0, 32.0, 335.0, 91.0, 12.0, 1.2, Color32::from_gray(70), 0.0);
             c.text(209.5, 66.0, "剪贴板记录已关闭", 12.0, W::Semibold, theme::WHITE, H::Center);
@@ -796,7 +797,7 @@ impl App {
         let recent = items.iter().filter(|clip| !clip.pinned).count();
         self.clip_first = self.clip_first.min(n.saturating_sub(CLIP_ROWS));
 
-        // 右上：条数与「清空」（只清未固定的）。
+        // 与分栏相邻，右半边留给 VPN 状态。
         if recent > 0 {
             let confirming = self.clip_confirm_clear.is_some_and(|at| self.t - at < 3.0);
             if !confirming { self.clip_confirm_clear = None; }
@@ -804,7 +805,7 @@ impl App {
             let lw = c.text_w("清空", size::SMALL, W::Regular) + 16.0;
             let base = if confirming { Color32::from_rgb(120, 28, 36) } else { theme::BTN };
             let hover = if confirming { Color32::from_rgb(150, 34, 44) } else { theme::BTN_HOVER };
-            let x = 351.0 - lw;
+            let x = tabs_right + 10.0;
             let (r, bc) = capsule(c, x, 11.5, lw, 17.0, "clip-clear", base, hover);
             bc.text(x + lw / 2.0, 23.5, label, size::SMALL, W::Regular, theme::WHITE, H::Center);
             let r = r.on_hover_text(if confirming { "再点一次清空未固定的记录" } else { "清空未固定的记录" });
@@ -892,7 +893,7 @@ impl App {
 
     /// 拖入遮罩：流动虚线框 + 跟随光标的柔光 + 上下轻跳的托盘图标。
     fn drag_overlay(&self, c: &Card) {
-        let (x, y, w, h) = (42.0, 31.0, 335.0, 93.0);
+        let (x, y, w, h) = (42.0, 39.0, 335.0, 84.0);
         c.fill(x, y, w, h, 12.0, Color32::from_black_alpha(110));
         if let Some(p) = self.cursor_local {
             let px = p.x.clamp(x + 20.0, x + w - 20.0);

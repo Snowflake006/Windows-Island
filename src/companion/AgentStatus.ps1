@@ -15,15 +15,15 @@ function Get-SessionState($lines, [datetimeoffset]$now = [datetimeoffset]::Now) 
  $state='unknown'; $stamp=$null
  foreach ($line in $lines) {
   # Read structural metadata without parsing potentially huge tool outputs.
-  $types=[regex]::Matches($line,'"type"\s*:\s*"([^"\\]+)"')
-  if ($types.Count -lt 2) { continue }
-  $role=[regex]::Match($line,'"role"\s*:\s*"([^"\\]+)"').Groups[1].Value
-  $phase=[regex]::Match($line,'"phase"\s*:\s*"([^"\\]+)"').Groups[1].Value
-  $time=[regex]::Match($line,'"timestamp"\s*:\s*"([^"\\]+)"').Groups[1].Value
-  $e=@{type=$types[0].Groups[1].Value;timestamp=$time;payload=@{type=$types[1].Groups[1].Value;role=$role;phase=$phase}}
+  $eventMatch=[regex]::Match($line,'"type"\s*:\s*"([^"\\]+)"')
+  if (!$eventMatch.Success) { continue }
+  $payloadMatch=$eventMatch.NextMatch()
+  if (!$payloadMatch.Success) { continue }
+  $eventType=$eventMatch.Groups[1].Value
+  $payloadType=$payloadMatch.Groups[1].Value
   $next=$null
-  if ($e.type -eq 'event_msg') {
-   switch ($e.payload.type) {
+  if ($eventType -eq 'event_msg') {
+   switch ($payloadType) {
     task_started { $next='thinking' }
     task_complete { $next='complete' }
     turn_aborted { $next='stopped' }
@@ -33,20 +33,26 @@ function Get-SessionState($lines, [datetimeoffset]$now = [datetimeoffset]::Now) 
     request_user_input { $next='action' }
     waiting_for_input { $next='action' }
    }
-  } elseif ($e.type -eq 'response_item') {
-   if ($e.payload.type -in @('function_call','custom_tool_call')) {
+  } elseif ($eventType -eq 'response_item') {
+   if ($payloadType -in @('function_call','custom_tool_call')) {
     $toolName=[regex]::Match($line,'"name"\s*:\s*"([^"\\]+)"').Groups[1].Value
     if ($toolName -match '(^|[._])request_user_input(_async)?$') { $next='action' } else { $next='tool' }
    }
-   elseif ($e.payload.type -in @('function_call_output','custom_tool_call_output','reasoning')) { $next='thinking' }
-   elseif ($e.payload.type -eq 'message') {
-    if ($e.payload.role -eq 'user') { $next='thinking' }
-    elseif ($e.payload.role -eq 'assistant') {
-     if ($e.payload.phase -in @('final','final_answer')) { $next='complete' } else { $next='thinking' }
+   elseif ($payloadType -in @('function_call_output','custom_tool_call_output','reasoning')) { $next='thinking' }
+   elseif ($payloadType -eq 'message') {
+    $role=[regex]::Match($line,'"role"\s*:\s*"([^"\\]+)"').Groups[1].Value
+    if ($role -eq 'user') { $next='thinking' }
+    elseif ($role -eq 'assistant') {
+     $phase=[regex]::Match($line,'"phase"\s*:\s*"([^"\\]+)"').Groups[1].Value
+     if ($phase -in @('final','final_answer')) { $next='complete' } else { $next='thinking' }
     }
    }
   }
-  if ($next) { $state=$next; try { $stamp=[datetimeoffset]::Parse($e.timestamp) } catch { $stamp=$null } }
+  if ($next) {
+   $state=$next
+   $time=[regex]::Match($line,'"timestamp"\s*:\s*"([^"\\]+)"').Groups[1].Value
+   try { $stamp=[datetimeoffset]::Parse($time) } catch { $stamp=$null }
+  }
  }
  if ($state -in @('thinking','tool') -and (!$stamp -or ($now-$stamp).TotalMinutes -gt 10)) { $state='unknown' }
  [pscustomobject]@{State=$state; Time=$stamp}
@@ -76,6 +82,28 @@ function Select-CodexSessions($states) {
  $states | Group-Object { if ($_.SessionId) { $_.SessionId } else { $_.File } } | ForEach-Object {
   $_.Group | Sort-Object Generation,Time -Descending | Select-Object -First 1
  }
+}
+
+function Get-IslandCodexRecord($file, $cache, [switch]$IncludeUsage) {
+ $key=$file.FullName
+ $version="$($file.Length):$($file.LastWriteTimeUtc.Ticks)"
+ $entry=$cache[$key]
+ if (!$entry -or $entry.Version -ne $version) {
+  $lines=@(Read-SessionTail $key)
+  $state=Add-CodexSessionIdentity (Get-SessionState $lines) $key
+  $record=$null
+  if ($IncludeUsage) {
+   $last=$lines | Where-Object { $_ -match '"token_count"' -and $_ -match 'total_token_usage' } | Select-Object -Last 1
+   if ($last) { try { $record=$last | ConvertFrom-Json } catch {} }
+  }
+  $entry=@{Version=$version;State=$state;Usage=$record}
+  $cache[$key]=$entry
+ }
+ $state=$entry.State
+ if ($state.State -in @('thinking','tool') -and $state.Time -and ([datetimeoffset]::Now-$state.Time).TotalMinutes -gt 10) {
+  $state.State='unknown'
+ }
+ return $entry
 }
 function Get-AgentPresentation($state) {
  switch ($state) {

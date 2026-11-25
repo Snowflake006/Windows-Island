@@ -33,27 +33,20 @@
  $local:quota=$null; $local:quotaTime=$null
  $logDir = Join-Path $env:USERPROFILE '.codex\sessions'
  if (Test-Path $logDir) {
-  foreach ($f in @(Get-ChildItem $logDir -Filter *.jsonl -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 20)) {
+  $recentFiles=@(Get-ChildItem $logDir -Filter *.jsonl -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 20)
+  $liveKeys=@($recentFiles.FullName)
+  foreach($key in @($script:fileCache.Keys)){ if ($key -notin $liveKeys) { $script:fileCache.Remove($key) } }
+  foreach ($f in $recentFiles) {
    try {
-    $cacheKey=$f.FullName
-    $version="$($f.Length):$($f.LastWriteTimeUtc.Ticks)"
-    $cached=$script:fileCache[$cacheKey]
-    if (!$cached -or $cached.Version -ne $version) {
-     $lines=@(Read-SessionTail $f.FullName)
-     $cached=@{Version=$version; Lines=$lines}
-     $script:fileCache[$cacheKey]=$cached
-    }
-    $session=Get-SessionState $cached.Lines
-    $session=Add-CodexSessionIdentity $session $f.FullName
-    $sessionStates += $session
-    $last = $cached.Lines | Where-Object { $_ -match '"token_count"' -and $_ -match 'total_token_usage' } | Select-Object -Last 1
-    if ($last) {
-     $record=$last | ConvertFrom-Json
+    $cached=Get-IslandCodexRecord $f $script:fileCache -IncludeUsage
+    $sessionStates += $cached.State
+    $record=$cached.Usage
+    if ($record) {
      if ($record.payload.rate_limits -and (!$local:quotaTime -or [datetimeoffset]$record.timestamp -gt [datetimeoffset]$local:quotaTime)) {
       $local:quota=$record.payload.rate_limits; $local:quotaTime=$record.timestamp
      }
+     if ($f.CreationTime.Date -eq (Get-Date).Date) { $u=$record.payload.info.total_token_usage; if ($u) { $local:usage += [pscustomobject]@{Agent='Codex'; File=$f.Name; Total=[long]$u.total_tokens; Input=[long]$u.input_tokens; Cached=[long]$u.cached_input_tokens; Output=[long]$u.output_tokens; Time=$record.timestamp; Limits=$record.payload.rate_limits} } }
     }
-    if ($last -and $f.CreationTime.Date -eq (Get-Date).Date) { $ev = $last | ConvertFrom-Json; $u = $ev.payload.info.total_token_usage; if ($u) { $local:usage += [pscustomobject]@{Agent='Codex'; File=$f.Name; Total=[long]$u.total_tokens; Input=[long]$u.input_tokens; Cached=[long]$u.cached_input_tokens; Output=[long]$u.output_tokens; Time=$ev.timestamp; Limits=$ev.payload.rate_limits} } }
    } catch {}
   }
  }

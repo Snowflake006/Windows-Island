@@ -37,7 +37,8 @@ pub const WEATHER_PAGE: usize = 8;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
-pub const BAR_H: f32 = 30.0; // 收起药丸高
+pub const BAR_H: f32 = 30.0; // 常驻内容的绘制坐标高度
+pub(crate) const PILL_RESIDENT_H: f32 = 44.0;
 pub(crate) const HUD_W: f32 = 260.0;
 pub(crate) const LYRIC_BAR_W: f32 = 300.0;
 pub(crate) const HUD_TRACK_X: f32 = 48.0;
@@ -53,7 +54,14 @@ pub const WIN_H: f32 = 270.0;
 /// 胶囊皮肤与屏幕顶边的间隙。
 pub const PILL_GAP: f32 = 6.0;
 
-/// 胶囊的柔和投影：四周都有，多层叠加近似高斯。
+fn resident_height(settings:&model::Settings)->f32 {
+    if settings.island_shape==model::IslandShape::Pill && settings.dock==model::Dock::Top {
+        PILL_RESIDENT_H
+    }else{
+        BAR_H
+    }
+}
+
 /// 圆角矩形一圈轮廓点（顺时针、首尾闭合），用于沿胶囊外形逐段着色。
 fn round_rect_points(r:Rect,radius:f32)->Vec<Pos2>{
     let radius=radius.min(r.width().min(r.height())*0.5).max(0.0);
@@ -76,6 +84,37 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
     for (grow,a) in [(10.0f32,0.035f32),(6.5,0.05),(3.5,0.07),(1.5,0.09)] {
         let r=Rect::from_min_max(rect.min-Vec2::new(grow*0.6,grow*0.3),rect.max+Vec2::new(grow*0.6,grow));
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
+    }
+}
+
+type PillRimCache=egui::cache::FrameCache<std::sync::Arc<egui::Mesh>,PillRim>;
+
+#[derive(Default)]
+struct PillRim;
+impl egui::cache::ComputerMut<([u32;6],Color32,Color32),std::sync::Arc<egui::Mesh>> for PillRim {
+    fn compute(&mut self,(bits,top,bottom):([u32;6],Color32,Color32))->std::sync::Arc<egui::Mesh>{
+        let [x,y,right,lower,radius,feather]=bits.map(f32::from_bits);
+        let rect=Rect::from_min_max(Pos2::new(x,y),Pos2::new(right,lower));
+        let outer=feather*0.35;
+        let peak=feather*0.95;
+        let inner=(1.7+feather).min(rect.height().min(rect.width())/4.0);
+        let mut mesh=egui::Mesh::default();
+        let contours=[outer,peak,inner].map(|inset|round_rect_points(rect.shrink(inset),radius-inset));
+        for i in 0..contours[0].len() {
+            let point=contours[1][i];
+            let t=smoothstep(0.0,1.0,(point.y-rect.top())/rect.height());
+            mesh.colored_vertex(contours[0][i],Color32::TRANSPARENT);
+            mesh.colored_vertex(point,paint::mix(top,bottom,t));
+            mesh.colored_vertex(contours[2][i],Color32::TRANSPARENT);
+            if i>0 {
+                let n=i as u32*3;
+                for j in 0..2 {
+                    mesh.add_triangle(n+j-3,n+j,n+j+1);
+                    mesh.add_triangle(n+j-3,n+j+1,n+j-2);
+                }
+            }
+        }
+        std::sync::Arc::new(mesh)
     }
 }
 pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "智能体", "日程", "天气"];
@@ -190,7 +229,6 @@ pub enum Cmd {
     RequestQqNotifications,
     DisconnectNotifications,
     ToggleAutostart,
-    AddFiles,
     DragFile(PathBuf),
     QuotaRefresh,
     QuotaConnected,
@@ -240,7 +278,7 @@ impl GlassShape {
             Self::Outline(points) => points.clone(),
             Self::Notch { rect, flare, flare_h, radius } => shape::outline(*rect, *flare, *flare_h, *radius),
             Self::Docked { rect, dock, flare, flare_h, radius } => shape::outline_docked(*rect, *dock, *flare, *flare_h, *radius),
-            Self::Round(r, radius) => shape::outline(*r, 0.0, 0.5, *radius),
+            Self::Round(r, radius) => round_rect_points(*r,*radius),
         }
     }
 }
@@ -894,6 +932,8 @@ pub struct App {
     pub(crate) quota: crate::quota_ui::State,
     /// 天气页的当前数据与后台拉取状态。
     pub(crate) weather: crate::weather::State,
+    pub(crate) weather_repaint: Option<std::time::Duration>,
+    pub(crate) weather_ambient_since: Option<f64>,
     pub(crate) weather_source: crate::weather_source_ui::State,
     pub(crate) updates: crate::updates::State,
     pub(crate) resident: bar::Motion,
@@ -913,7 +953,7 @@ impl App {
         });
         let settings = model::Settings::load();
         let clipboard_on = settings.clipboard_history;
-        let (bw, bh) = if settings.minimal { (BAR_W_MIN, BAR_H_MIN) } else { (BAR_W, BAR_H) };
+        let (bw, bh) = if settings.minimal { (BAR_W_MIN, BAR_H_MIN) } else { (BAR_W, resident_height(&settings)) };
         let focus_seconds=settings.focus_minutes as f32*60.0;
         let initial_lyrics=settings.lyrics_enabled;
         let initial_page=settings.page_order.iter().copied().find(|page|settings.visible_pages[*page]).unwrap_or(0);
@@ -1029,6 +1069,8 @@ impl App {
             companion: crate::companion::State::new(),
             quota: crate::quota_ui::State::load(),
             weather,
+            weather_repaint: None,
+            weather_ambient_since: None,
             weather_source,
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
             resident: Default::default(), resident_power:(None,false),
@@ -1546,10 +1588,11 @@ impl App {
     pub fn save_window_before_exit(&self){self.window_layout().close();}
 
     #[cfg(windows)]
-    pub fn start_tray(&self,state:crate::tray::State)->Option<crate::tray::Tray>{
+    pub fn start_tray(&self,state:crate::tray::State,ctx:&egui::Context)->Option<std::sync::mpsc::Receiver<crate::tray::Tray>>{
         let layout=self.settings_window.clone();
+        let ctx=ctx.clone();
         // 原生文件选择框会占用界面线程，托盘退出时直接保存最近一次观察到的布局。
-        crate::tray::Tray::start_with_exit(state,move||layout.lock().unwrap_or_else(|e|e.into_inner()).close())
+        crate::tray::Tray::start_async(state,move||layout.lock().unwrap_or_else(|e|e.into_inner()).close(),move||ctx.request_repaint())
     }
 
     pub fn open_settings(&mut self){
@@ -1787,11 +1830,11 @@ impl App {
             return self.side_base_size(self.effective_minimal()&&self.t>=self.notification_bell_until);
         }
         if self.island_lyrics_active() {
-            (self.lyric_bar_width(),BAR_H)
+            (self.lyric_bar_width(),resident_height(&self.settings))
         } else if self.effective_minimal()&&self.t>=self.notification_bell_until {
             (BAR_W_MIN, BAR_H_MIN)
         } else {
-            (self.resident.target.width.min(WIN_W-32.0), BAR_H)
+            (self.resident.target.width.min(WIN_W-32.0), resident_height(&self.settings))
         }
     }
 
@@ -1830,6 +1873,7 @@ impl App {
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
+        self.weather_repaint = None;
         let dt = match self.last_t {
             Some(t0) => (env.t - t0).clamp(0.0, 0.1) as f32,
             None => 0.0,
@@ -1896,14 +1940,22 @@ impl App {
         if self.settings.companion_badge {layout.add_badge();}
         if self.companion_slot_enabled() {
             let width=self.companion_width(&ctx);
-            let full_label=self.companion.visible.len()==1 && self.settings.companion_labels;
+            let full_label=self.companion_keeps_full_label();
             let available=WIN_W-32.0-layout.width-bar::CONTENT_GAP-reserve;
             // A single status takes its full width; the shared header can fit the
             // entire row when many other components are enabled.
-            if full_label{layout.add_companion(width);}else if available>=16.0{layout.add_companion(width.min(available));}
+            if full_label{layout.add_companion(width);}else if available>=self.companion_min_width(){layout.add_companion(width.min(available));}
         }
         layout.reorder(&bar::full_order(&self.settings.resident_order,self.settings.show_battery));
         for (position,extra) in balances{layout.balance_tail(position,extra);}
+        let limit=WIN_W-32.0;
+        if self.companion_has_short_meeting() && layout.width>limit {
+            // A crowded row can scale down the other items. Reserve enough
+            // space so the date and title still render at their normal size.
+            let label=layout.widths[bar::COMPANION];
+            let fit=((limit-label)/(layout.width-label)).clamp(0.01,1.0);
+            layout.set_width(bar::COMPANION,label/fit);
+        }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2035,7 +2087,7 @@ impl App {
         // A growing/contracting body must already cover the complete single-agent
         // slot. Its content and neighbors can continue springing into place.
         if !self.side() && !self.open && self.notice.is_none() && !self.island_lyrics_active()
-            && !self.effective_minimal() && self.settings.companion_labels && self.companion.visible.len()==1 {
+            && !self.effective_minimal() && self.companion_keeps_full_label() {
             let layout=self.resident.current();
             if let Some(center)=layout.x[bar::COMPANION]{
                 let fit=((WIN_W-32.0)/self.resident.target.width).min(1.0);
@@ -2065,11 +2117,11 @@ impl App {
         let minimal_pill = minimal_strip && pc < 0.02;
         let flare = if minimal_pill || pill { 0.0 } else { lerp(5.0, FLARE, pc) };
         let k = (w / PW).clamp(0.3, 1.1);
-        let thickness = if side { crate::side_dock::SIDE_BAR_W } else { BAR_H };
+        let thickness = if side { crate::side_dock::SIDE_BAR_W } else { resident_height(&self.settings) };
         let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill {
             // Keep broad ends rounded while a long resident row contracts into the panel.
             let wide_rounding=if side {0.0} else {18.0*smoothstep(PW,PW+100.0,w)*smoothstep(0.0,0.18,pc)};
-            (w.min(h)*0.5).min(lerp(thickness*0.5,26.0,pc)+wide_rounding)
+            (w.min(h)*0.5).min(lerp(thickness*0.5,30.0,pc)+wide_rounding)
         } else { lerp(12.5, RAD * k.min(1.0), pc) };
         let flare_h = lerp(8.0, FLARE_H, pc);
         let thick = glass::thickness(PH);
@@ -2084,7 +2136,9 @@ impl App {
         let island_shadow=|r:Rect,flare:f32,flare_h:f32,radius:f32,strength:f32| if pill {pill_shadow(&painter,r,radius,strength)} else if side {shape::shadow_docked(&painter,r,dock,flare,flare_h,radius,strength)} else {shape::shadow(&painter,r,flare,flare_h,radius,strength)};
         // 拿起时投影加深，像被从屏幕边缘提起来。
         let lifted = self.drag_lift.pos.clamp(0.0, 1.2);
-        island_shadow(body, flare, flare_h, radius, (smoothstep(0.1, 0.9, pc) + lifted * 0.9) * shadow_k);
+        let resting_shadow=if pill && !minimal_pill{0.26}else{0.0};
+        let elevation=lerp(resting_shadow,1.0,smoothstep(0.1,0.9,pc))+lifted*0.9;
+        island_shadow(body, flare, flare_h, radius,elevation*shadow_k);
         if let Some(r)=outside_badge{
             let appear=self.messenger_appear();
             painter.rect_filled(r,r.width()/2.0,paint::alpha(self.glass_fill(),appear));
@@ -2280,7 +2334,8 @@ impl App {
             shapes
         });
         self.update_position_drag(&ctx,env,dt);
-        let transitioning = self.companion.greeting(self.t) || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
+        let transitioning = self.companion.greeting(self.t) || !self.open && !side && !minimal_pill && self.companion_idle_transition()
+            || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
             || self.center_guide>0.002 || self.center_lock_a>0.002 || self.t-self.center_lock_at<CENTER_SWEEP
             || !self.h.settled(self.expanded_height())
             || self.page_e() < 0.7
@@ -2302,9 +2357,11 @@ impl App {
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
-        let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
+        if self.weather_repaint.is_none() { self.weather_ambient_since = None; }
+        let weather_repaint=self.weather_repaint.unwrap_or(std::time::Duration::from_secs(1));
+        let animating=transitioning || ambient || weather_repaint<std::time::Duration::from_secs(1) || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
-        let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
+        let repaint_after=weather_repaint.min(std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0}));
         cmds.append(&mut self.pending);
         let next_hit=if side {self.side_hit_rect(win,self.progress())} else {self.hit_rect(cx,top,self.progress())};
         if page_before!=self.page && self.open {
@@ -2433,7 +2490,8 @@ impl App {
             (panel.center().x-width/2.0,panel.bottom())
         }else{
             let right=panel.right()+self.notice_width.pos;
-            let y=if self.notice.is_some() && !self.compact_notices(){panel.center().y-BAR_H/2.0}else{panel.top()};
+            let y=if self.notice.is_some() && !self.compact_notices(){panel.center().y-BAR_H/2.0}
+                else{panel.top()+self.resident_header_offset(self.progress())};
             (if right+width<=bounds.right(){right}else{panel.left()-width},y)
         };
         Some(Rect::from_min_size(Pos2::new(x,y),Vec2::new(width,height)))
@@ -2531,7 +2589,9 @@ impl App {
     fn notice_rect(&self,cx:f32,top:f32)->Option<Rect>{
         if !self.compact_notices(){return None;}
         let width=self.notice_width.pos-8.0;
-        (width>0.5).then(||Rect::from_min_size(Pos2::new(cx+self.w.pos/2.0+8.0,top),Vec2::new(width,BAR_H)))
+        (width>0.5).then(||Rect::from_min_size(
+            Pos2::new(cx+self.w.pos/2.0+8.0,top+self.resident_header_offset(self.progress())),
+            Vec2::new(width,BAR_H)))
     }
     fn notice_details_rect(&self,cx:f32,top:f32)->Option<Rect>{
         let a=self.hud_notice.as_ref().filter(|_|self.notice_details&&self.notice.is_some())?;
@@ -2574,6 +2634,19 @@ impl App {
         Color32::from_white_alpha((255.0*strength).round() as u8)
     }
 
+    fn paint_pill_rim(&self,painter:&egui::Painter,rect:Rect,radius:f32,feather:f32) {
+        if rect.height().min(rect.width())<10.0{return;}
+        let (top,bottom)=match self.settings.skin {
+            model::Skin::GlassLight=>(Color32::from_white_alpha(140),Color32::from_white_alpha(42)),
+            model::Skin::Cream=>(Color32::from_white_alpha(155),Color32::from_rgba_unmultiplied(93,63,41,30)),
+            model::Skin::Classic=>(Color32::from_white_alpha(84),Color32::from_white_alpha(14)),
+            model::Skin::GlassDark|model::Skin::Fluid=>(Color32::from_white_alpha(92),Color32::from_white_alpha(22)),
+        };
+        let key=([rect.left(),rect.top(),rect.right(),rect.bottom(),radius,feather].map(f32::to_bits),top,bottom);
+        let mesh=painter.ctx().memory_mut(|memory|memory.caches.cache::<PillRimCache>().get(key));
+        painter.add(egui::Shape::Mesh(mesh));
+    }
+
     /// 绘制岛体（或通知胶囊）的本体：经典皮肤为纯黑；毛玻璃为着色底 + 顶部柔光 + 边缘高光。
     fn paint_body(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,feather:f32){
         let skin=self.settings.skin;
@@ -2596,14 +2669,13 @@ impl App {
                 for vertex in &mut mesh.vertices {vertex.pos=map.apply(vertex.pos);}
             }
             painter.add(egui::Shape::mesh(mesh));
+            if pill {self.paint_pill_rim(painter,rect,radius,feather);}
             return;
         }
         if self.settings.island_shape==model::IslandShape::Pill {
             let radius=radius.min(rect.height().min(rect.width())*0.5);
             painter.rect_filled(rect,radius,self.glass_fill());
-            if skin.is_glass() && rect.height()>=10.0 {
-                painter.rect_stroke(rect,radius,egui::Stroke::new(1.0_f32,self.glass_rim()),egui::StrokeKind::Inside);
-            }
+            self.paint_pill_rim(painter,rect,radius,feather);
             return;
         }
         let dock=self.dock();
@@ -2922,10 +2994,16 @@ impl App {
     // ---------------------------------------------------------------
     // 顶栏：电池 + 日期 + 时钟。药丸里的电池与时钟会「飞」到顶栏位置（共享元素过渡）。
     // ---------------------------------------------------------------
+    fn resident_header_offset(&self,p:f32)->f32 {
+        let padding=(resident_height(&self.settings)-BAR_H)/2.0;
+        padding*(1.0-smoothstep(0.0,0.72,p))
+    }
+
     fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env) {
         let local_cx = cx - base.origin.x;
         let fit=((WIN_W-32.0)/self.resident.target.width).min(1.0);
-        let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
+        let scale=lerp(fit,1.0,p);
+        let fitted=base.scaled(local_cx,15.0,scale).shifted(0.0,self.resident_header_offset(p)/scale);
         let base=&fitted;
         let lyric=self.island_lyric().map(|(index,_)|index);
         let lyric_alpha=if self.island_lyrics_active() {1.0-smoothstep(0.0,0.35,p)}else{0.0};
@@ -3049,7 +3127,18 @@ impl App {
         }
         let compact_alpha=1.0-smoothstep(0.0,0.22,p);
         if compact_alpha>0.004 {if let Some(x)=layout.x[bar::BADGE]{self.companion_badge_draw(&base.faded(compact_alpha),local_cx+x,15.0);}}
-        if compact_alpha>0.004 {if let Some(x)=layout.x[bar::COMPANION]{self.companion_bar(&base.faded(compact_alpha),local_cx+x,layout.widths[bar::COMPANION]);}}
+        if compact_alpha>0.004 {
+            if let Some(x)=layout.x[bar::COMPANION] {
+                let x=local_cx+x;
+                let card=base.faded(compact_alpha);
+                let width=layout.widths[bar::COMPANION];
+                if self.companion_has_short_meeting() && scale<1.0 {
+                    self.companion_bar(&card.scaled(x,15.0,1.0/scale),x,width*scale);
+                }else{
+                    self.companion_bar(&card,x,width);
+                }
+            }
+        }
         if self.t<self.notification_bell_until&&!self.compact_notices()&&p<0.1 {
             if let Some(x)=layout.x[bar::BELL]{
                 let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
@@ -3220,7 +3309,7 @@ impl App {
             0 => self.page_music(c, env, cmds),
             1 => self.page_focus(c, env),
             2 => self.page_water(c, env),
-            3 => self.page_shelf(c, env, cmds),
+            3 => self.page_shelf(c, cmds),
             4 => self.page_todo(c, env, cmds),
             5 => self.page_mail(c, env, cmds),
             6 => self.page_companion(c,cmds),
@@ -3312,16 +3401,18 @@ impl App {
         let calendar_on=self.module_on(CALENDAR_PAGE);
         for entry in self.calendar.local.iter().filter(|_|calendar_on) {
             let Some(at)=entry.reminder_at() else{continue;};
-            let key=calendar::dedupe_key(&entry.event);
             let cutoff=if entry.event.all_day{at+60}else{entry.event.start+60};
-            if now_ts>=at && now_ts<cutoff && !self.mail.fired.contains(&key) && seen.insert(key.clone()) {
+            if now_ts<at || now_ts>=cutoff {continue;}
+            let key=calendar::dedupe_key(&entry.event);
+            if !self.mail.fired.contains(&key) && seen.insert(key.clone()) {
                 picks.push((key,entry.event.clone(),"本机日程".into(),CALENDAR_PAGE));
             }
         }
         for (m,provider) in self.calendar_work_events(None).into_iter().filter(|_|calendar_on) {
             let left = m.start - now_ts;
+            if m.all_day || left>lead || left<=-60 {continue;}
             let key = calendar::dedupe_key(m);
-            if !m.all_day && left <= lead && left > -60 && !self.mail.fired.contains(&key) && seen.insert(key.clone()) {
+            if !self.mail.fired.contains(&key) && seen.insert(key.clone()) {
                 let source=provider.map(|provider|provider.label()).unwrap_or("日历");
                 picks.push((key, m.clone(), source.to_string(), CALENDAR_PAGE));
             }
@@ -3329,8 +3420,9 @@ impl App {
         if calendar_on && self.mail_active() {
             for m in self.mail.recent.iter().filter_map(|m| m.meeting.as_ref()).filter(|m|!self.mail_event_ignored(m)) {
                 let left = m.start - now_ts;
+                if m.all_day || left>lead || left<=-60 {continue;}
                 let key = calendar::dedupe_key(m);
-                if !m.all_day && left <= lead && left > -60 && !self.mail.fired.contains(&key) && seen.insert(key.clone()) {
+                if !self.mail.fired.contains(&key) && seen.insert(key.clone()) {
                     picks.push((key, m.clone(), "邮件邀请".to_string(), CALENDAR_PAGE));
                 }
             }

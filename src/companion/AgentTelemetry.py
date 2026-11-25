@@ -737,6 +737,9 @@ if __name__ == '__main__':
         snapshots = {}
         harness_cache = {}
         workbuddy_cache = {}
+        last_snapshot = None
+        last_write = 0.0
+        interval = 0.25 if args.watch_fast else 0.1
         while True:
             started = time.monotonic()
             try:
@@ -745,11 +748,13 @@ if __name__ == '__main__':
                 cache = fresh
                 harness = scan_harness_fast(Path(args.home), harness_cache, time.time())
                 workbuddy = scan_workbuddy_fast(Path(args.home), workbuddy_cache, time.time())
-                print(json.dumps(dict(Detail=detail, Harness=harness, WorkBuddy=workbuddy,
-                                      SampledAt=time.time()), ensure_ascii=True), flush=True)
+                snapshot = dict(Detail=detail, Harness=harness, WorkBuddy=workbuddy)
+                if not args.watch_fast or snapshot != last_snapshot or started - last_write >= 1.0:
+                    print(json.dumps(dict(snapshot, SampledAt=time.time()), ensure_ascii=True), flush=True)
+                    last_snapshot, last_write = snapshot, started
             except (OSError, ValueError):
                 pass
-            time.sleep(max(0.01, 0.1 - (time.monotonic() - started)))
+            time.sleep(max(0.01, interval - (time.monotonic() - started)))
     else:
         if not args.cache:
             parser.error('--cache is required unless --watch-fast is used')

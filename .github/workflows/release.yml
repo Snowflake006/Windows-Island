@@ -7,7 +7,7 @@ on:
       tag:
         description: 'Release tag'
         required: true
-        default: v2.0.2
+        default: v2.0.3
 permissions:
   contents: write
 jobs:
@@ -53,4 +53,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create $env:RELEASE_TAG dist/Windows-Island-v*-windows-x64.zip dist/Windows-Island-Setup-v*-windows-x64.exe dist/SHA256SUMS.txt --title "Windows Island $env:RELEASE_TAG" --generate-notes
+          $tag = [regex]::Escape($env:RELEASE_TAG)
+          $notes = [regex]::Match((Get-Content CHANGELOG.md -Raw), "(?ms)^## $tag [^\r\n]+\r?\n(.*?)(?=^## |\z)").Groups[1].Value.Trim()
+          if (!$notes) { throw 'Release notes are missing from CHANGELOG.md' }
+          $notesFile = Join-Path $env:RUNNER_TEMP 'windows-island-notes.md'
+          Set-Content -LiteralPath $notesFile -Value $notes -Encoding utf8
+          gh release create $env:RELEASE_TAG dist/Windows-Island-v*-windows-x64.zip dist/Windows-Island-Setup-v*-windows-x64.exe dist/SHA256SUMS.txt --title "Windows Island $env:RELEASE_TAG" --notes-file $notesFile --verify-tag

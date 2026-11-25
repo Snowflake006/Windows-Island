@@ -79,7 +79,7 @@ pub(crate) fn has_ended(event:&mail::Meeting,now:i64)->bool {
     end.unwrap_or(event.start.saturating_add(60))<=now
 }
 
-fn calendar_now(env:&Env)->i64{
+pub(crate) fn calendar_now(env:&Env)->i64{
     chrono::NaiveDateTime::parse_from_str(&format!("{} {}",env.today,env.clock),"%Y-%m-%d %H:%M:%S").ok()
             .and_then(|at|at.and_local_timezone(chrono::Local).earliest()).map(|at|at.timestamp()).unwrap_or_else(||chrono::Local::now().timestamp())
 }
@@ -233,15 +233,28 @@ impl App {
         self.pending.push(Cmd::CalendarMonth(view.month));
     }
 
-    pub(crate) fn calendar_work_events(&self, month:Option<NaiveDate>)->Vec<(&mail::Meeting,Option<calendar::Provider>)> {
-        if self.calendar.feeds.is_empty() {
+    pub(crate) fn calendar_work_events(&self, month:Option<NaiveDate>)->impl Iterator<Item=(&mail::Meeting,Option<calendar::Provider>)> {
+        let legacy=self.calendar.feeds.is_empty().then(|| {
             let events=if month.is_some() && self.calendar.view.loaded==month {&self.calendar.view.events}else{&self.calendar.events};
-            return events.iter().map(|event|(event,self.calendar.config.as_ref().map(|cfg|cfg.provider))).collect();
-        }
-        self.calendar.feeds.iter().flat_map(|feed|{
+            events.iter().map(move |event|(event,self.calendar.config.as_ref().map(|cfg|cfg.provider)))
+        }).into_iter().flatten();
+        legacy.chain(self.calendar.feeds.iter().flat_map(move |feed|{
             let events=if month.is_some() && feed.month.loaded==month {&feed.month.events}else{&feed.events};
             events.iter().map(move |event|(event,Some(feed.config.provider)))
-        }).collect()
+        }))
+    }
+
+    pub(crate) fn upcoming_calendar_event(&self, now:i64)->Option<&mail::Meeting> {
+        if !self.module_on(CALENDAR_PAGE){return None;}
+        let month_events=self.calendar.view.loaded.into_iter().filter(|_|self.calendar.feeds.is_empty())
+            .flat_map(|_|self.calendar.view.events.iter())
+            .chain(self.calendar.feeds.iter().filter(|feed|feed.month.loaded.is_some()).flat_map(|feed|feed.month.events.iter()));
+        let mail=self.mail.recent.iter().filter_map(|item|item.meeting.as_ref())
+            .filter(|event|self.mail_active()&&!self.mail_event_ignored(event));
+        self.calendar_work_events(None).map(|(event,_)|event).chain(month_events)
+            .chain(self.calendar.local.iter().map(|entry|&entry.event)).chain(mail)
+            .filter(|event|event.start>=now && !event.title.trim().is_empty())
+            .min_by_key(|event|(event.start,event.all_day))
     }
 
     pub(crate) fn calendar_entries(&self, day:NaiveDate)->Vec<Entry<'_>> {

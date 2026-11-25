@@ -1,6 +1,6 @@
 use egui::{UserData, ViewportId};
 use epaint::ColorImage;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use wgpu::{BindGroupLayout, MultisampleState, StoreOp};
 
 /// A texture and a buffer for reading the rendered frame back to the cpu.
@@ -15,6 +15,7 @@ pub struct CaptureState {
     pub texture: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    spare_buffer: Arc<Mutex<Option<wgpu::Buffer>>>,
 }
 
 pub type CaptureReceiver = mpsc::Receiver<(ViewportId, Vec<UserData>, ColorImage)>;
@@ -60,6 +61,7 @@ impl CaptureState {
             texture,
             pipeline,
             bind_group,
+            spare_buffer: Default::default(),
         }
     }
 
@@ -105,6 +107,8 @@ impl CaptureState {
             self.texture = new_texture;
             self.padding = padding;
             self.bind_group = bind_group;
+            // A callback from the old surface may still complete after a resize.
+            self.spare_buffer = Default::default();
         }
     }
 
@@ -122,16 +126,14 @@ impl CaptureState {
             "Texture sizes must match, `CaptureState::update` was probably not called"
         );
 
-        // It would be more efficient to reuse the Buffer, e.g. via some kind of ring buffer, but
-        // for most screenshot use cases this should be fine. When taking many screenshots (e.g. for a video)
-        // it might make sense to revisit this and implement a more efficient solution.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        // The layered island captures repeatedly. Keep one unmapped staging buffer for the next frame.
+        let spare = self.spare_buffer.lock().unwrap_or_else(|error| error.into_inner()).take();
+        let buffer = spare.unwrap_or_else(|| device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("egui_screen_capture_buffer"),
             size: (self.padding.padded_bytes_per_row * self.texture.height()) as u64,
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
-        });
+        }));
         let padding = self.padding;
         let tex = &mut self.texture;
 
@@ -184,13 +186,12 @@ impl CaptureState {
         tx: CaptureSender,
         viewport_id: ViewportId,
     ) {
-        #[allow(clippy::arc_with_non_send_sync)]
-        let buffer = Arc::new(buffer);
         let buffer_clone = buffer.clone();
         let buffer_slice = buffer_clone.slice(..);
         let format = self.texture.format();
         let tex_extent = self.texture.size();
         let padding = self.padding;
+        let spare_buffer = self.spare_buffer.clone();
         let bgra = match format {
             wgpu::TextureFormat::Rgba8Unorm => false,
             wgpu::TextureFormat::Bgra8Unorm => true,
@@ -208,6 +209,7 @@ impl CaptureState {
 
             let pixels = capture_pixels(&buffer_slice.get_mapped_range(), padding, bgra);
             buffer.unmap();
+            let _previous = spare_buffer.lock().unwrap_or_else(|error| error.into_inner()).replace(buffer);
 
             tx.send((
                 viewport_id,

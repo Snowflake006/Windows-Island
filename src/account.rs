@@ -29,7 +29,7 @@ struct Backup {
 // Only general preferences are portable. Machine identifiers, app paths and
 // ignored calendar/mail items are deliberately excluded along with all secrets.
 fn portable_key(key: &str) -> bool {
-    matches!(key, "skin" | "island_shape" | "dock" | "glass_blur" | "island_size"
+    matches!(key, "skin" | "island_shape" | "dock" | "glass_blur" | "island_size" | model::ISLAND_SIZE_BASIS_KEY
         | "settings_theme" | "pet" | "minimal" | "browser_minimal" | "avoid_browsers"
         | "visible_pages" | "page_order" | "resident_order" | "clock_period"
         | "badge_style" | "companion_badge" | "companion_labels" | "companion_todos"
@@ -56,6 +56,9 @@ fn restore(current: &Settings, raw: &str, owner: u64) -> Result<Settings,String>
         return Err("备份包含不支持的设置，未恢复".into());
     }
     let mut pairs: BTreeMap<_,_> = current.pairs().into_iter().collect();
+    if backup.settings.contains_key("island_size") && !backup.settings.contains_key(model::ISLAND_SIZE_BASIS_KEY) {
+        pairs.remove(model::ISLAND_SIZE_BASIS_KEY);
+    }
     pairs.extend(backup.settings);
     Ok(Settings::from_pairs(pairs.into_iter().collect()))
 }

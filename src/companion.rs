@@ -4,7 +4,7 @@ use eframe::egui::{self, Color32};
 use crate::{app::{App,Cmd,Env},paint::{self,Card,H},theme::{self,W}};
 use std::collections::HashMap;
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(default, rename_all="PascalCase")]
 pub struct Agent {
     pub name:String, pub state:String, pub window_state:Option<String>,
@@ -16,12 +16,19 @@ impl Agent {
     pub fn label(&self)->&str {match self.state.as_str(){"thinking"|"chat_thinking"=>"思考中","tool"=>"执行工具","action"=>"需要操作","complete"=>"已完成","stopped"=>"已停止","error"=>"任务异常","unknown"=>"状态待确认",_=>"在线"}}
     pub fn color(&self)->Color32 {match self.state.as_str(){"chat_thinking"=>theme::BLUE,"thinking"|"tool"=>theme::YELLOW,"action"|"error"=>theme::RED_TOP,"complete"=>theme::SOFT_GREEN,_=>theme::DIM}}
 }
-#[derive(Clone,Debug,Default,Deserialize)]
+#[derive(Clone,Debug,Default,Deserialize,PartialEq)]
 #[serde(default,rename_all="PascalCase")]
 pub struct Vpn {pub connected:bool,pub delay:Option<f64>,pub text:String}
-#[derive(Clone,Debug,Default,Deserialize)]
+#[derive(Clone,Debug,Default,Deserialize,PartialEq)]
 #[serde(default,rename_all="PascalCase")]
 pub struct Snapshot { pub unlock_hint:String, pub agents:Vec<Agent>,pub vpn:Vpn,pub usage:Vec<serde_json::Value>,pub ready:bool,pub sampled_at:u64 }
+
+struct IdleItem {
+    text: String,
+    meeting: Option<crate::mail::Meeting>,
+    rotating: bool,
+}
+
 #[derive(Default)]
 pub(crate) struct State {
     pub snapshot:Snapshot, pub visible:Vec<Agent>, previous:HashMap<String,String>,
@@ -30,12 +37,15 @@ pub(crate) struct State {
     textures:HashMap<String,egui::TextureHandle>,
     state_at:HashMap<String,f64>,
     pub hold_seconds:f64, pub greeting_seconds:f64, pub max_icons:usize,
+    idle:Option<IdleItem>,
+    idle_second:Option<u64>,
 }
 impl State {
     pub(crate) fn new()->Self{Self{panel:true,..Default::default()}}
     // Start on live state; account quota remains one click away.
     pub fn update(&mut self,snapshot:&Snapshot,t:f64,unlock:u64) {
         if unlock!=self.unlock {self.unlock=unlock;self.unlock_at=Some(t);}
+        if snapshot==&self.snapshot && self.holds.values().all(|&until|t<until){return;}
         self.visible.clear();
         for a in &snapshot.agents {
             if self.previous.get(&a.name)!=Some(&a.state){self.state_at.insert(a.name.clone(),t);}
@@ -52,6 +62,9 @@ impl State {
     pub fn greeting(&self,t:f64)->bool {self.unlock_at.is_some_and(|at|t-at<self.greeting_duration())}
     pub fn greeting_duration(&self)->f64{if self.greeting_seconds>0.0{self.greeting_seconds}else{3.2}}
     pub fn limit(&self)->usize{if self.max_icons>0{self.max_icons}else{4}}
+    fn has_active_agent(&self,t:f64)->bool {
+        self.visible.iter().any(|agent|agent.busy() || self.holds.get(&agent.name).is_some_and(|&until|t<until))
+    }
 }
 fn badge(state:&mut State,c:&Card,x:f32,y:f32){
     // Sample the four original Windows panes supplied by the user.
@@ -88,6 +101,9 @@ fn icon(state:&mut State,c:&Card,a:&Agent,x:f32,y:f32){
 }
 const AGENT_WIDTH:f32=19.0;
 const AGENT_GAP:f32=crate::bar_layout::CONTENT_GAP;
+const IDLE_LABEL_SIZE:f32=10.5;
+const CALENDAR_ICON_WIDTH:f32=12.0;
+const CALENDAR_ICON_SPACE:f32=CALENDAR_ICON_WIDTH+4.0;
 pub(crate) const VPN_CLOCK_INSET: f32 = 6.0;
 fn agent_icons_width(count:usize)->f32 {if count==0{0.0}else{count as f32*AGENT_WIDTH+(count-1) as f32*AGENT_GAP}}
 
@@ -96,19 +112,79 @@ impl App {
         // Root viewport scaling already updates pixels_per_point. Measure the same
         // logical font used by Card, leaving one physical pixel for glyph overhang.
         ctx.fonts(|fonts|{
-            let galley=fonts.layout_no_wrap(text.to_owned(),theme::font(size,W::Regular),Color32::WHITE);
+            let galley=fonts.layout_no_wrap(crate::rtl_text::display(text).into_owned(),theme::font(size,W::Regular),Color32::PLACEHOLDER);
             galley.size().x.max(galley.mesh_bounds.right())
         })+1.0/ctx.pixels_per_point()
     }
     fn companion_agents_width(&self,ctx:&egui::Context,shown:usize,total:usize)->f32 {
         agent_icons_width(shown)+if total>shown{AGENT_GAP+self.companion_text_width(ctx,&format!("+{}",total-shown),10.0)}else{0.0}
     }
-    pub(crate) fn companion_step(&mut self,env:&Env){self.companion.hold_seconds=self.settings.companion_done_seconds as f64;self.companion.greeting_seconds=self.settings.unlock_seconds as f64+0.2;self.companion.max_icons=self.settings.companion_max_icons as usize;if !self.settings.unlock_feedback{self.companion.unlock=env.unlock_version;self.companion.unlock_at=None;}self.companion.update(&env.companion,self.t,if self.settings.unlock_feedback{env.unlock_version}else{self.companion.unlock});}
-    pub(crate) fn companion_slot_enabled(&self)->bool {self.companion.greeting(self.t) || self.settings.companion_bar && (!self.companion.visible.is_empty()||self.settings.companion_todos)}
-    fn companion_todo(&self)->(String,usize){
-        let items:Vec<_>=self.todos.items.iter().filter(|a|a.scheduled_on(&self.today)&&!a.done_for(&self.today)).collect();
-        let text=if items.is_empty(){if !self.companion.snapshot.ready{"正在连接桌面…"}else if self.todos.items.iter().any(|a|a.scheduled_on(&self.today)){"今日待办已完成"}else{"今日暂无待办"}.to_owned()}else{items[(self.t/6.0) as usize%items.len()].text.clone()};
-        (text,items.len())
+    pub(crate) fn companion_step(&mut self,env:&Env){
+        self.companion.hold_seconds=self.settings.companion_done_seconds as f64;
+        self.companion.greeting_seconds=self.settings.unlock_seconds as f64+0.2;
+        self.companion.max_icons=self.settings.companion_max_icons as usize;
+        if !self.settings.unlock_feedback{self.companion.unlock=env.unlock_version;self.companion.unlock_at=None;}
+        self.companion.update(&env.companion,self.t,if self.settings.unlock_feedback{env.unlock_version}else{self.companion.unlock});
+        if !self.settings.companion_bar || !self.settings.companion_todos || self.companion.has_active_agent(self.t) {
+            self.companion.idle=None;
+            self.companion.idle_second=None;
+            return;
+        }
+        let second=self.t as u64;
+        if self.companion.idle_second!=Some(second) {
+            self.companion.idle=self.idle_companion_item(crate::calendar_ui::calendar_now(env),second as usize/6);
+            self.companion.idle_second=Some(second);
+        }
+    }
+    pub(crate) fn resident_agents(&self)->&[Agent] {
+        if self.companion.idle.is_some(){&[]}else{&self.companion.visible}
+    }
+    pub(crate) fn companion_slot_enabled(&self)->bool {self.companion.greeting(self.t) || self.settings.companion_bar && (!self.resident_agents().is_empty()||self.settings.companion_todos)}
+
+    fn idle_companion_item(&self, now:i64, slot:usize)->Option<IdleItem> {
+        let todos=self.todos.items.iter().filter(|item|self.module_on(crate::app::TODO_PAGE)
+            && item.scheduled_on(&self.today) && !item.done_for(&self.today));
+        let count=todos.clone().count();
+        let next=self.upcoming_calendar_event(now);
+        let rotating=(count>0 && next.is_some()) || count>1;
+        if let Some(event)=next.filter(|_|count==0 || slot%2==1) {
+            let at=chrono::DateTime::from_timestamp(event.start,0)?.with_timezone(&chrono::Local);
+            let when=if at.date_naive().to_string()==self.today {
+                if event.all_day{"全天".to_owned()}else{at.format("%H:%M").to_string()}
+            }else if event.all_day{at.format("%m/%d").to_string()}else{at.format("%m/%d %H:%M").to_string()};
+            return Some(IdleItem{text:format!("{when} {}",event.title.trim()),meeting:Some(event.clone()),rotating});
+        }
+        if count==0{return None;}
+        let todo=todos.into_iter().nth((if next.is_some(){slot/2}else{slot})%count)?;
+        Some(IdleItem{text:todo.text.clone(),meeting:None,rotating})
+    }
+    fn idle_companion_label(&self)->&str {
+        self.companion.idle.as_ref().map_or_else(|| {
+            if !self.companion.snapshot.ready{"正在连接桌面…"}
+            else if self.todos.items.iter().any(|item|item.scheduled_on(&self.today)){"今日待办已完成"}
+            else{"今日暂无待办"}
+        },|item|item.text.as_str())
+    }
+    pub(crate) fn companion_side_idle(&self)->bool {
+        self.settings.companion_bar && self.companion.idle.is_some()
+    }
+    pub(crate) fn companion_idle_transition(&self)->bool {
+        self.companion.idle.as_ref().is_some_and(|item|item.rotating) && self.t%6.0<0.24
+    }
+    fn resident_meeting(&self)->Option<&crate::mail::Meeting>{
+        self.companion.idle.as_ref().and_then(|item|item.meeting.as_ref())
+    }
+    pub(crate) fn companion_has_short_meeting(&self)->bool {
+        !self.companion.greeting(self.t)
+            && self.resident_meeting().is_some_and(|event|event.title.trim().chars().count()<=10)
+    }
+    pub(crate) fn companion_keeps_full_label(&self)->bool {
+        if self.companion.greeting(self.t){return false;}
+        self.companion_has_short_meeting()
+            || (self.settings.companion_labels && self.resident_agents().len()==1)
+    }
+    pub(crate) fn companion_min_width(&self)->f32 {
+        if self.resident_meeting().is_some(){CALENDAR_ICON_SPACE+12.0}else{16.0}
     }
     pub(crate) fn companion_width(&self,ctx:&egui::Context)->f32 {
         if !self.companion_slot_enabled(){return 0.0;}
@@ -119,8 +195,15 @@ impl App {
             })+1.0/ctx.pixels_per_point();
             return label+if self.companion.snapshot.unlock_hint=="face"{24.0+AGENT_GAP}else{0.0};
         }
-        match self.companion.visible.as_slice(){
-            []=>self.companion_text_width(ctx,&self.companion_todo().0,10.5).min(116.0),
+        match self.resident_agents(){
+            []=>{
+                let width=self.companion_text_width(ctx,self.idle_companion_label(),IDLE_LABEL_SIZE);
+                match self.resident_meeting(){
+                    Some(_) if self.companion_keeps_full_label()=>width+CALENDAR_ICON_SPACE,
+                    Some(_)=>width.min(150.0)+CALENDAR_ICON_SPACE,
+                    None=>width.min(116.0),
+                }
+            }
             [agent]=>AGENT_WIDTH+if self.settings.companion_labels{AGENT_GAP+self.companion_text_width(ctx,agent.label(),10.5)}else{0.0},
             agents=>self.companion_agents_width(ctx,agents.len().min(self.companion.limit()),agents.len()),
         }
@@ -231,13 +314,21 @@ impl App {
             cc.painter.add(egui::Shape::line(points,egui::Stroke::new(1.4*cc.s,theme::BLUE)));
             cc.text(x+24.0+AGENT_GAP,19.0,"已解锁",11.0,W::Semibold,theme::WHITE,H::Left);return;
         }
-        let agents=self.companion.visible.clone();
+        let agents=self.resident_agents();
         if agents.is_empty(){
-            let (text,count)=self.companion_todo();
-            let fade=if count>1{crate::anim::smoothstep(0.0,0.24,(self.t%6.0) as f32)}else{1.0};
-            c.faded(fade).shifted(0.0,(1.0-fade)*2.0).text(x,19.0,&c.fit(&text,10.5,W::Regular,width),10.5,W::Regular,theme::GRAY,H::Left);
-            if c.hit(x,2.0,width,27.0,"companion-todo").on_hover_text(text).clicked(){self.show_page(4);}return;
+            let text=self.idle_companion_label();
+            let fade=if self.companion.idle.as_ref().is_some_and(|item|item.rotating){crate::anim::smoothstep(0.0,0.24,(self.t%6.0) as f32)}else{1.0};
+            let visual=c.faded(fade).shifted(0.0,(1.0-fade)*2.0);
+            let icon_space=if self.resident_meeting().is_some(){
+                paint::calendar_mark(&visual,x+CALENDAR_ICON_WIDTH/2.0,15.0);
+                CALENDAR_ICON_SPACE
+            }else{0.0};
+            let label=if self.companion_keeps_full_label(){std::borrow::Cow::Borrowed(text)}
+                else{std::borrow::Cow::Owned(c.fit(text,IDLE_LABEL_SIZE,W::Regular,width-icon_space))};
+            visual.text(x+icon_space,19.0,&label,IDLE_LABEL_SIZE,W::Regular,theme::GRAY,H::Left);
+            if c.hit(x,2.0,width,27.0,"companion-idle").on_hover_text(text).clicked(){self.open_companion_idle();}return;
         }
+        let agents=agents.to_vec();
         let mut capacity=agents.len().min(self.companion.limit());
         while capacity>1 && self.companion_agents_width(c.ui.ctx(),capacity,agents.len())>width+0.1{capacity-=1;}
         for (i,a) in agents.iter().take(capacity).enumerate(){
@@ -266,10 +357,26 @@ impl App {
     }
     pub(crate) fn companion_side(&mut self,c:&Card,cx:f32,top:f32){
         if self.settings.companion_badge{self.companion_badge_draw(c,cx,top+12.0);}
-        if c.hit(cx-12.0,top,24.0,24.0,"side-companion").on_hover_text("智能体与连接状态").clicked(){self.companion.panel=true;self.show_page(6);}
-        let agents=self.companion.visible.clone();
+        if self.settings.companion_badge && c.hit(cx-12.0,top,24.0,24.0,"side-companion").on_hover_text("智能体与连接状态").clicked(){self.companion.panel=true;self.show_page(6);}
         if self.companion.greeting(self.t){c.text(cx,top+33.0,"已解锁",8.5,W::Regular,theme::BLUE,H::Center);return;}
+        if let Some(item)=self.companion.idle.as_ref().filter(|_|self.settings.companion_bar){
+            let y=top+if self.settings.companion_badge{24.0}else{0.0};
+            if item.meeting.is_some() {paint::calendar_mark(c,cx,y+7.0);}
+            else {c.text(cx,y+10.0,"待办",8.0,W::Regular,theme::GRAY,H::Center);}
+            let label=if item.meeting.is_some(){item.text.split_whitespace().next().unwrap_or(&item.text)}else{&item.text};
+            c.text(cx,y+21.0,&c.fit(label,8.0,W::Regular,31.0),8.0,W::Regular,theme::WHITE,H::Center);
+            if c.hit(cx-16.0,y,32.0,24.0,"side-companion-idle").on_hover_text(&item.text).clicked(){self.open_companion_idle();}
+            return;
+        }
+        let agents=self.resident_agents().to_vec();
         for(i,a)in agents.iter().take(if self.settings.companion_bar{self.companion.limit()}else{0}).enumerate(){let y=top+if self.settings.companion_badge{36.0}else{12.0}+i as f32*24.0;icon(&mut self.companion,c,a,cx,y);if c.hit(cx-12.0,y-12.0,24.0,24.0,("side-live",&a.name)).on_hover_text(format!("{} · {}",a.name,a.label())).clicked(){self.companion.panel=true;self.companion.selected=Some(a.name.clone());self.show_page(6);}}
+    }
+    fn open_companion_idle(&mut self) {
+        if let Some(meeting)=self.companion.idle.as_ref().and_then(|item|item.meeting.clone()) {
+            self.open_calendar(Some(meeting));
+        }else{
+            self.show_page(crate::app::TODO_PAGE);
+        }
     }
     pub(crate) fn page_companion(&mut self,c:&Card,cmds:&mut Vec<Cmd>){
         for (x,label,on) in [(44.0,"运行状态",self.companion.panel),(135.0,"账户额度",!self.companion.panel)]{
@@ -315,26 +422,125 @@ impl App {
 
 /// The helper is owned by Daozai, bundled in the executable, and stopped on exit.
 #[cfg(windows)]
-pub struct Service {child:Option<std::process::Child>,rx:std::sync::mpsc::Receiver<Snapshot>,pub latest:Snapshot,ctx:egui::Context,retry_at:std::time::Instant}
+pub struct Service {
+    child: Option<BridgeProcess>,
+    starting: Option<std::sync::mpsc::Receiver<Option<BridgeProcess>>>,
+    incoming: std::sync::Arc<std::sync::Mutex<Option<Snapshot>>>,
+    pub latest: Snapshot,
+    ctx: egui::Context,
+    retry_at: std::time::Instant,
+}
+
 #[cfg(windows)]
 impl Service {
-    pub fn start(ctx:egui::Context)->Self {
-        use std::{io::{BufRead,BufReader},os::windows::process::CommandExt};
-        let (tx,rx)=std::sync::mpsc::sync_channel(2);let root=crate::model::config_dir().join("companion-runtime");let data=crate::model::config_dir().join("companion");
-        let files=[("Hello.ps1",include_str!("companion/Hello.ps1")),("Bridge.ps1",include_str!("companion/Bridge.ps1")),("Collector.ps1",include_str!("companion/Collector.ps1")),("AgentStatus.ps1",include_str!("companion/AgentStatus.ps1")),("AgentProcesses.ps1",include_str!("companion/AgentProcesses.ps1")),("AgentTelemetry.py",include_str!("companion/AgentTelemetry.py")),("DesktopAgentStatus.cs",include_str!("companion/DesktopAgentStatus.cs")),("DesktopAgentMonitor.ps1",include_str!("companion/DesktopAgentMonitor.ps1")),("RuntimePaths.ps1",include_str!("companion/RuntimePaths.ps1")),("VpnStatus.ps1",include_str!("companion/VpnStatus.ps1"))];
-        let setup=(||->std::io::Result<()>{std::fs::create_dir_all(&root)?;std::fs::create_dir_all(&data)?;if !root.join("python-runtime.zip").exists(){std::fs::write(root.join("python-runtime.zip"),include_bytes!("../assets/runtime/python-3.14.10-embed-amd64.zip"))?;}for(name,content)in files{std::fs::write(root.join(name),format!("\u{feff}{}",content.trim_start_matches('\u{feff}')))?;}Ok(())})();
-        let mut child=if setup.is_ok(){std::process::Command::new("powershell.exe").args(["-NoProfile","-ExecutionPolicy","Bypass","-File"]).arg(root.join("Bridge.ps1")).arg("-Owner").arg(std::process::id().to_string()).env("WORKPELLET_DATA_DIR",&data).creation_flags(0x08000000).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).spawn().ok()}else{None};
-        let wake=ctx.clone();
-        if let Some(stdout)=child.as_mut().and_then(|p|p.stdout.take()){std::thread::spawn(move||{for line in BufReader::new(stdout).lines().map_while(Result::ok){if let Ok(snapshot)=serde_json::from_str::<Snapshot>(&line){match tx.try_send(snapshot){Err(std::sync::mpsc::TrySendError::Disconnected(_))=>break,_=>{}}wake.request_repaint();}}});}
-        Self{child,rx,latest:Snapshot::default(),ctx,retry_at:std::time::Instant::now()+std::time::Duration::from_secs(5)}
+    pub fn start(ctx: egui::Context) -> Self {
+        let mut service=Self {
+            child:None,
+            starting:None,
+            incoming:Default::default(),
+            latest:Snapshot::default(),
+            ctx,
+            retry_at:std::time::Instant::now(),
+        };
+        service.start_bridge();
+        service
     }
-    pub fn snapshot(&mut self)->Snapshot{if std::time::Instant::now()>=self.retry_at && self.child.as_mut().map_or(true,|p|p.try_wait().ok().flatten().is_some()) {*self=Self::start(self.ctx.clone());}while let Ok(s)=self.rx.try_recv(){self.latest=s;}let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();if self.latest.sampled_at>0&&now.saturating_sub(self.latest.sampled_at)>15{self.latest.agents.clear();self.latest.ready=false;self.latest.vpn=Vpn{text:"连接状态暂不可读".into(),..Default::default()};}self.latest.clone()}
+
+    fn start_bridge(&mut self) {
+        let (tx,rx)=std::sync::mpsc::channel();
+        let incoming=self.incoming.clone();
+        let wake=self.ctx.clone();
+        self.retry_at=std::time::Instant::now()+std::time::Duration::from_secs(5);
+        if std::thread::Builder::new().name("daozai-companion-launch".into()).spawn(move||{
+            let _=tx.send(BridgeProcess::start(incoming,wake.clone()));
+            wake.request_repaint();
+        }).is_ok() {
+            self.starting=Some(rx);
+        }
+    }
+
+    pub fn snapshot(&mut self) -> Snapshot {
+        if let Some(starting)=&self.starting {
+            match starting.try_recv() {
+                Ok(child)=>{self.child=child;self.starting=None;}
+                Err(std::sync::mpsc::TryRecvError::Disconnected)=>self.starting=None,
+                Err(std::sync::mpsc::TryRecvError::Empty)=>{}
+            }
+        }
+        if self.starting.is_none() && std::time::Instant::now()>=self.retry_at
+            && self.child.as_mut().is_none_or(|bridge|bridge.0.try_wait().ok().flatten().is_some())
+        {
+            self.child=None;
+            self.start_bridge();
+        }
+        if let Some(snapshot)=self.incoming.lock().unwrap_or_else(|e|e.into_inner()).take(){self.latest=snapshot;}
+        let now=std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+        if self.latest.sampled_at>0 && now.saturating_sub(self.latest.sampled_at)>15 {
+            self.latest.agents.clear();
+            self.latest.ready=false;
+            self.latest.vpn=Vpn{text:"连接状态暂不可读".into(),..Default::default()};
+        }
+        self.latest.clone()
+    }
 }
+
 #[cfg(windows)]
-impl Drop for Service{fn drop(&mut self){if let Some(p)=self.child.as_mut(){if p.try_wait().ok().flatten().is_some(){return;}
-    use std::os::windows::process::CommandExt;
-    let _=std::process::Command::new("taskkill.exe").args(["/PID",&p.id().to_string(),"/T","/F"]).creation_flags(0x08000000).output();let _=p.wait();
-}}}
+struct BridgeProcess(std::process::Child);
+
+#[cfg(windows)]
+impl BridgeProcess {
+    fn start(incoming:std::sync::Arc<std::sync::Mutex<Option<Snapshot>>>,wake:egui::Context)->Option<Self> {
+        use std::{io::{BufRead,BufReader},os::windows::process::CommandExt};
+        let root=crate::model::config_dir().join("companion-runtime");
+        let data=crate::model::config_dir().join("companion");
+        let files=[("Hello.ps1",include_str!("companion/Hello.ps1")),("Bridge.ps1",include_str!("companion/Bridge.ps1")),("Collector.ps1",include_str!("companion/Collector.ps1")),("AgentStatus.ps1",include_str!("companion/AgentStatus.ps1")),("AgentProcesses.ps1",include_str!("companion/AgentProcesses.ps1")),("AgentTelemetry.py",include_str!("companion/AgentTelemetry.py")),("DesktopAgentStatus.cs",include_str!("companion/DesktopAgentStatus.cs")),("DesktopAgentMonitor.ps1",include_str!("companion/DesktopAgentMonitor.ps1")),("RuntimePaths.ps1",include_str!("companion/RuntimePaths.ps1")),("VpnStatus.ps1",include_str!("companion/VpnStatus.ps1"))];
+        std::fs::create_dir_all(&root).ok()?;
+        std::fs::create_dir_all(&data).ok()?;
+        let python=root.join("python-runtime.zip");
+        if !python.exists(){
+            std::fs::write(python,include_bytes!("../assets/runtime/python-3.14.10-embed-amd64.zip")).ok()?;
+        }
+        for (name,content) in files {
+            let path=root.join(name);
+            let script=format!("\u{feff}{}",content.trim_start_matches('\u{feff}'));
+            if !std::fs::read(&path).is_ok_and(|old|old==script.as_bytes()) {
+                std::fs::write(path,script).ok()?;
+            }
+        }
+        let mut child=std::process::Command::new("powershell.exe")
+            .args(["-NoProfile","-ExecutionPolicy","Bypass","-File"]).arg(root.join("Bridge.ps1"))
+            .arg("-Owner").arg(std::process::id().to_string()).env("WORKPELLET_DATA_DIR",data)
+            .creation_flags(0x08000000).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null())
+            .spawn().ok()?;
+        if let Some(stdout)=child.stdout.take(){
+            std::thread::spawn(move||{
+                let mut previous=Snapshot::default();
+                for line in BufReader::new(stdout).lines().map_while(Result::ok){
+                    let Ok(mut snapshot)=serde_json::from_str::<Snapshot>(&line) else{continue;};
+                    let sampled_at=std::mem::take(&mut snapshot.sampled_at);
+                    let changed=snapshot!=previous;
+                    if changed{previous=snapshot.clone();}
+                    snapshot.sampled_at=sampled_at;
+                    *incoming.lock().unwrap_or_else(|error|error.into_inner())=Some(snapshot);
+                    if changed{wake.request_repaint_after(std::time::Duration::from_millis(1));}
+                }
+            });
+        }
+        Some(Self(child))
+    }
+}
+
+#[cfg(windows)]
+impl Drop for BridgeProcess {
+    fn drop(&mut self) {
+        use std::os::windows::process::CommandExt;
+        if self.0.try_wait().ok().flatten().is_some(){return;}
+        let _=std::process::Command::new("taskkill.exe").args(["/PID",&self.0.id().to_string(),"/T","/F"])
+            .creation_flags(0x08000000).output();
+        let _=self.0.wait();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,4 +557,38 @@ mod tests {
     #[test] fn missing_metadata_never_becomes_completed(){let mut s=State::default();s.update(&Snapshot{agents:vec![agent("unknown")],..Default::default()},0.0,0);assert!(s.visible.is_empty());assert!(s.holds.is_empty());}
     #[test] fn unlock_is_an_event_not_a_repeated_snapshot(){let mut s=State::default();s.update(&Snapshot::default(),1.0,1);assert!(s.greeting(2.0));s.update(&Snapshot::default(),5.0,1);assert!(!s.greeting(5.0));}
     #[test] fn parses_powershell_snapshot(){let s:Snapshot=serde_json::from_str(r#"{"Agents":[{"Name":"Codex","State":"tool","ProcessIds":[123],"WindowState":"background"}],"Vpn":{"Connected":true,"Delay":42,"Text":"42 ms"},"Ready":true}"#).unwrap();assert!(s.agents[0].busy());assert_eq!(s.vpn.delay,Some(42.0));}
+
+    #[test]
+    fn idle_slot_alternates_todos_and_next_event_and_yields_to_active_agents() {
+        let _guard=crate::ui_tests::ENV_LOCK.lock().unwrap_or_else(|error|error.into_inner());
+        let ctx=egui::Context::default();
+        let mut app=App::new(&ctx,crate::app::Options{fetch_lyrics:false,pet_idle:1e9});
+        let mut env=Env{today:"2026-11-25".into(),clock:"10:00:00".into(),..Default::default()};
+        app.today=env.today.clone();
+        app.todos.items.clear();
+        app.calendar.local.clear();
+        let now=crate::calendar_ui::calendar_now(&env);
+        let meeting=|title:&str,start|crate::mail::Meeting{title:title.into(),start,all_day:false,end:None,at:String::new(),uid:title.into()};
+        app.calendar.events=vec![meeting("已开始",now-60),meeting("较晚",now+3600),meeting("下一条",now+1800)];
+        env.companion.agents=vec![Agent{window_state:Some("foreground".into()),..agent("online")}];
+        app.companion_step(&env);
+        assert!(app.resident_agents().is_empty());
+        assert!(app.idle_companion_label().contains("下一条"));
+        app.open_companion_idle();
+        assert_eq!(app.page(),crate::app::CALENDAR_PAGE);
+        app.todos.items=vec![crate::model::TodoItem{text:"读书".into(),..Default::default()},crate::model::TodoItem{text:"整理".into(),..Default::default()}];
+        for (t,text) in [(1.0,"读书"),(6.0,"下一条"),(12.0,"整理"),(18.0,"下一条")]{
+            app.t=t;
+            app.companion_step(&env);
+            assert!(app.idle_companion_label().contains(text));
+        }
+        env.companion.agents[0].state="thinking".into();
+        app.companion_step(&env);
+        assert_eq!(app.resident_agents().len(),1);
+        app.settings.visible_pages[crate::app::CALENDAR_PAGE]=false;
+        env.companion.agents.clear();
+        app.t=19.0;
+        app.companion_step(&env);
+        assert!(app.companion.idle.as_ref().is_some_and(|item|item.meeting.is_none()));
+    }
 }

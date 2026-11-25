@@ -39,7 +39,8 @@ pub fn startup(stage:&str) {
     let directory=daozai::model::config_dir().join("diagnostics");
     if std::fs::create_dir_all(&directory).is_ok() {
         let _=std::fs::write(directory.join("last-startup.log"),format!(
-            "Windows Island {}\n进程：{}\n启动阶段：{stage}\n",env!("CARGO_PKG_VERSION"),std::process::id()));
+            "Windows Island {}\n进程：{}\n启动阶段：{stage}\n启动耗时：{} ms\n",
+            env!("CARGO_PKG_VERSION"),std::process::id(),STARTED.get().map_or(0,|start|start.elapsed().as_millis())));
     }
 }
 
@@ -49,7 +50,16 @@ pub fn graphics(cc:&eframe::CreationContext<'_>) {
     let details=if let Some(gl)=&cc.gl {unsafe{format!("厂商：{}\n渲染器：{}\nOpenGL：{}\n",
         gl.get_parameter_string(eframe::glow::VENDOR),gl.get_parameter_string(eframe::glow::RENDERER),gl.get_parameter_string(eframe::glow::VERSION))}}
     else if let Some(state)=&cc.wgpu_render_state {
-        let info=state.adapter.get_info();format!("渲染器：{}\n图形后端：{:?}\n设备类型：{:?}\n",info.name,info.backend,info.device_type)
+        let info=state.adapter.get_info();
+        let mut details=format!("渲染器：{}\n图形后端：{:?}\n设备类型：{:?}\n",info.name,info.backend,info.device_type);
+        #[cfg(windows)]
+        if info.backend==eframe::wgpu::Backend::Dx12 {
+            let id=unsafe { state.adapter.as_hal::<eframe::wgpu::hal::api::Dx12,_,_>(|adapter|{
+                adapter.and_then(|adapter|adapter.raw_adapter().GetDesc1().ok()).map(|desc|desc.AdapterLuid)
+            }) };
+            if let Some(id)=id { details.push_str(&format!("适配器 LUID：0x{:08X}_0x{:08X}\n",id.HighPart as u32,id.LowPart)); }
+        }
+        details
     }else{return;};
     let directory=daozai::model::config_dir().join("diagnostics");
     if std::fs::create_dir_all(&directory).is_ok(){let _=std::fs::write(directory.join("last-graphics.log"),details);}

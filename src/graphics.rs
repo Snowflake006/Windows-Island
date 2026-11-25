@@ -40,10 +40,48 @@ fn forced_compatible()->bool {
     std::env::var("DAOZAI_RENDERER").is_ok_and(|value|value.trim().eq_ignore_ascii_case("wgpu"))
 }
 
+/// 双显卡机器让 DXGI/DX12 按低功耗偏好选择适配器，避免 OpenGL 由厂商驱动自行挑卡。
+/// 这里只枚举适配器，不创建显卡设备。单显卡和不支持此接口的系统继续使用 OpenGL。
+#[cfg(windows)]
+fn has_distinct_gpu_preferences() -> bool {
+    use windows::Win32::Graphics::Dxgi::{
+        CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory6, DXGI_ADAPTER_FLAG_SOFTWARE,
+        DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_GPU_PREFERENCE_MINIMUM_POWER,
+    };
+    let compare = || -> windows::core::Result<bool> {
+        unsafe {
+            let factory: IDXGIFactory6 = CreateDXGIFactory1()?;
+            let low: IDXGIAdapter1 = factory.EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_MINIMUM_POWER)?;
+            let high: IDXGIAdapter1 = factory.EnumAdapterByGpuPreference(0, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE)?;
+            let (low, high) = (low.GetDesc1()?, high.GetDesc1()?);
+            let software = DXGI_ADAPTER_FLAG_SOFTWARE.0 as u32;
+            Ok((low.Flags | high.Flags) & software == 0
+                && (low.AdapterLuid.LowPart, low.AdapterLuid.HighPart) != (high.AdapterLuid.LowPart, high.AdapterLuid.HighPart))
+        }
+    };
+    compare().unwrap_or(false)
+}
+
 pub fn run(options:eframe::NativeOptions,launch:impl FnMut(eframe::NativeOptions)->eframe::Result<()>)->eframe::Result<()> {
     // 上次崩在显卡 OpenGL 驱动里时，崩溃处理留下的标记会在这里转成设置。
     let _=daozai::renderer::apply_pending_fallback();
-    run_with(forced_compatible() || daozai::renderer::compat_requested(),options,launch)
+    let compat_first=forced_compatible() || daozai::renderer::compat_requested();
+    #[cfg(windows)]
+    if has_distinct_gpu_preferences() {
+        // The DX12 backend exposes only the low-power adapter, with WARP as a fallback.
+        // Reuse that enumeration instead of asking wgpu to probe adapters a second time.
+        let mut options=compatible(options,eframe::wgpu::Backends::DX12);
+        if let eframe::egui_wgpu::WgpuSetup::CreateNew(setup)=&mut options.wgpu_options.wgpu_setup {
+            setup.native_adapter_selector=Some(std::sync::Arc::new(|adapters,surface| {
+                adapters.iter().find(|adapter|surface.is_none_or(|surface|adapter.is_surface_supported(surface)))
+                    .cloned().ok_or_else(||"低功耗显卡和软件渲染均不可用".into())
+            }));
+        }
+        daozai::renderer::set_compat_active(true);
+        let mut launch=launch;
+        return launch(options);
+    }
+    run_with(compat_first,options,launch)
 }
 
 fn opengl(mut options:eframe::NativeOptions)->eframe::NativeOptions { options.renderer=eframe::Renderer::Glow; options }

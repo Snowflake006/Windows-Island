@@ -14,7 +14,6 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows::core::{w, PCWSTR};
@@ -52,6 +51,19 @@ const TIMER_MENU: usize = 12;
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("Daozai");
 const MUTEX_NAME: PCWSTR = w!("Local\\Daozai.SingleInstance");
+
+pub fn local_preview() -> bool {
+    std::env::var_os("DAOZAI_DATA_DIR").is_some_and(|dir| !dir.is_empty())
+        && std::env::args_os().any(|arg| arg == "--local-preview")
+}
+
+pub fn window_title() -> &'static str {
+    if local_preview() { "Windows Island 本地预览" } else { "Windows Island" }
+}
+
+fn tray_class() -> PCWSTR {
+    if local_preview() { w!("DaozaiPreviewTray") } else { w!("DaozaiTray") }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct State {
@@ -155,7 +167,7 @@ fn add_icon(hwnd: HWND, hicon: HICON) -> bool {
         hIcon: hicon,
         ..Default::default()
     };
-    fill_tip(&mut nid.szTip, "Windows Island");
+    fill_tip(&mut nid.szTip, window_title());
     unsafe {
         if !Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
             // explorer 里已有同名残留时，用 MODIFY 顶掉
@@ -360,23 +372,28 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 }
 
 pub struct Tray {
-    hwnd: HWND,
+    hwnd: isize,
     events: Receiver<Event>,
     state: Arc<Mutex<State>>,
-    _thread: JoinHandle<()>,
 }
 
 impl Tray {
     /// 与托盘菜单「退出」相同：先摘图标再结束进程（用于「立即重启」）。
     pub fn exit_process(&self) -> ! {
-        unsafe { remove_icon(self.hwnd); ExitProcess(0); }
+        unsafe { remove_icon(self.hwnd()); ExitProcess(0); }
     }
 }
 
 impl Tray {
-    pub fn start(state: State) -> Option<Self> {Self::start_with_exit(state,||{})}
+    pub fn start(state: State) -> Option<Self> {
+        Self::start_async(state, || {}, || {})?.recv_timeout(Duration::from_secs(3)).ok()
+    }
 
-    pub(crate) fn start_with_exit(state: State,before_exit:impl Fn()+Send+'static) -> Option<Self> {
+    pub(crate) fn start_async(
+        state: State,
+        before_exit: impl Fn() + Send + 'static,
+        wake: impl FnOnce() + Send + 'static,
+    ) -> Option<Receiver<Self>> {
         let shared = Arc::new(Mutex::new(state));
         let (event_tx, event_rx) = channel();
         let (ready_tx, ready_rx) = channel();
@@ -385,11 +402,11 @@ impl Tray {
             .name("daozai-tray".into())
             .spawn(move || unsafe {
                 let Ok(module) = GetModuleHandleW(None) else {
-                    let _ = ready_tx.send(Err("GetModuleHandleW 失败".to_string()));
+                    eprintln!("tray: GetModuleHandleW 失败");
                     return;
                 };
                 let hinst = HINSTANCE(module.0);
-                let class = w!("DaozaiTray");
+                let class = tray_class();
                 let wc = WNDCLASSW {
                     style: WNDCLASS_STYLES(0),
                     lpfnWndProc: Some(wndproc),
@@ -419,12 +436,13 @@ impl Tray {
                 ) {
                     Ok(h) => h,
                     Err(e) => {
-                        let _ = ready_tx.send(Err(format!("创建托盘窗口失败：{e}")));
+                        eprintln!("tray: 创建托盘窗口失败：{e}");
                         return;
                     }
                 };
                 let Some(hicon) = load_icon() else {
-                    let _ = ready_tx.send(Err("读取托盘图标失败".to_string()));
+                    eprintln!("tray: 读取托盘图标失败");
+                    let _ = DestroyWindow(hwnd);
                     return;
                 };
                 let ctx = Box::new(Ctx {
@@ -441,7 +459,9 @@ impl Tray {
                 let added = add_icon(hwnd, hicon);
                 (*ctx_ptr).added.store(added, Ordering::Relaxed);
                 (*ctx_ptr).adds.store(1, Ordering::Relaxed);
-                let _ = ready_tx.send(Ok((hwnd.0 as isize, added)));
+                // Dropping a queued Tray closes its window even if the app exits before polling.
+                let _ = ready_tx.send(Self { hwnd: hwnd.0 as isize, events: event_rx, state: shared });
+                wake();
 
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -452,31 +472,17 @@ impl Tray {
                 let _ = DestroyIcon(hicon);
                 drop(Box::from_raw(ctx_ptr));
             });
-        let thread = match thread {
-            Ok(t) => t,
-            Err(_) => return None,
-        };
-        let (hwnd, _added) = match ready_rx.recv_timeout(Duration::from_secs(3)) {
-            Ok(Ok(v)) => v,
-            Ok(Err(e)) => {
-                eprintln!("tray: {e}");
-                return None;
-            }
-            Err(_) => {
-                eprintln!("tray: 启动超时");
-                return None;
-            }
-        };
-        Some(Self { hwnd: HWND(hwnd as *mut _), events: event_rx, state: shared, _thread: thread })
+        thread.ok()?;
+        Some(ready_rx)
     }
 
     #[allow(dead_code)]
     pub fn hwnd(&self) -> HWND {
-        self.hwnd
+        HWND(self.hwnd as *mut _)
     }
 
     pub fn notify(&self,title:&str,body:&str,sound:bool) {
-        let mut nid=NOTIFYICONDATAW {cbSize:std::mem::size_of::<NOTIFYICONDATAW>() as u32,hWnd:self.hwnd,uID:TRAY_UID,uFlags:NIF_INFO,dwInfoFlags:NIIF_INFO,..Default::default()};
+        let mut nid=NOTIFYICONDATAW {cbSize:std::mem::size_of::<NOTIFYICONDATAW>() as u32,hWnd:self.hwnd(),uID:TRAY_UID,uFlags:NIF_INFO,dwInfoFlags:NIIF_INFO,..Default::default()};
         fill_tip(&mut nid.szInfoTitle,title);fill_tip(&mut nid.szInfo,body);
         // NIIF_NOSOUND，默认安静提醒。
         if !sound {nid.dwInfoFlags.0|=0x10;}
@@ -501,7 +507,7 @@ impl Tray {
 impl Drop for Tray {
     fn drop(&mut self) {
         unsafe {
-            let _ = PostMessageW(self.hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(self.hwnd(), WM_CLOSE, WPARAM(0), LPARAM(0));
         }
     }
 }
@@ -516,8 +522,9 @@ pub fn play_health_sound() {
 
 /// 单实例：已有Windows Island实例时返回 false。
 pub fn single_instance() -> bool {
+    let mutex = if local_preview() { w!("Local\\Daozai.Preview.SingleInstance") } else { MUTEX_NAME };
     unsafe {
-        match CreateMutexW(None, false, MUTEX_NAME) {
+        match CreateMutexW(None, false, mutex) {
             Ok(handle) => {
                 if GetLastError() == ERROR_ALREADY_EXISTS {
                     let _ = CloseHandle(handle);
@@ -716,8 +723,9 @@ fn request_existing_window(hwnd:HWND,calendar:bool)->bool {unsafe{
 }}
 
 pub fn activate_existing(calendar:bool)->bool {unsafe{
-    let Ok(tray)=FindWindowW(w!("DaozaiTray"),PCWSTR::null()) else{return false;};
-    let Ok(window)=FindWindowW(PCWSTR::null(),w!("Windows Island")) else{return false;};
+    let Ok(tray)=FindWindowW(tray_class(),PCWSTR::null()) else{return false;};
+    let title=if local_preview() { w!("Windows Island 本地预览") } else { w!("Windows Island") };
+    let Ok(window)=FindWindowW(PCWSTR::null(),title) else{return false;};
     let(mut tray_pid,mut window_pid)=(0,0);
     GetWindowThreadProcessId(tray,Some(&mut tray_pid));
     GetWindowThreadProcessId(window,Some(&mut window_pid));

@@ -81,11 +81,12 @@ impl<'a> Card<'a> {
         self.painter.layout_no_wrap(crate::rtl_text::display(t).into_owned(), self.font(size, w), color)
     }
     pub fn text_w(&self, t: &str, size: f32, w: W) -> f32 {
-        self.galley(t, size, w, Color32::WHITE).size().x / self.s
+        self.galley(t, size, w, Color32::PLACEHOLDER).size().x / self.s
     }
     /// 返回局部坐标下的文字宽度。
     pub fn text(&self, x: f32, base: f32, t: &str, size: f32, w: W, color: Color32, h: H) -> f32 {
-        let g = self.galley(t, size, w, color);
+        // 单色标签的颜色由 TextShape 提供，换肤时与字形网格分开处理。
+        let g = self.galley(t, size, w, Color32::PLACEHOLDER);
         let gw = g.size().x;
         let asc = g.rows.first().and_then(|r| r.glyphs.first()).map(|g| g.pos.y).unwrap_or(size * self.s);
         let mut p = self.pos(x, base) - Vec2::new(0.0, asc);
@@ -100,7 +101,7 @@ impl<'a> Card<'a> {
     /// 以字形的实际可见范围对齐垂直中心，保持中英文状态文字居中。
     pub fn centered_text(&self, x:f32, cy:f32, t:&str, size:f32, w:W, color:Color32, h:H) {
         if t.is_empty(){return;}
-        let g=self.galley(t,size,w,color);
+        let g=self.galley(t,size,w,Color32::PLACEHOLDER);
         let dx=match h {H::Left=>0.0,H::Center=>g.size().x/2.0,H::Right=>g.size().x};
         let pos=self.pos(x,cy)-Vec2::new(dx,g.mesh_bounds.center().y);
         self.painter.galley(pos,g,color);
@@ -274,6 +275,24 @@ impl<'a> Card<'a> {
         let h = ctx.animate_bool_with_time(r.id.with("h"), self.live && r.hovered(), 0.14);
         let p = ctx.animate_bool_with_time(r.id.with("p"), self.live && r.is_pointer_button_down_on(), 0.07);
         (h, p)
+    }
+    pub fn header_action(&self, button:&Response, rect:Rect, label:&str, enabled:bool) {
+        let (hover,press)=self.hover_t(button);
+        let center=rect.center();
+        let visual=self.scaled(center.x,center.y,1.0-0.05*press);
+        visual.fill(rect.left(),rect.top(),rect.width(),rect.height(),rect.height()/2.0,
+            Color32::from_white_alpha((14.0+18.0*hover+24.0*press) as u8));
+        visual.text(center.x,center.y+4.0,label,10.0,W::Regular,if enabled{theme::GRAY}else{theme::DIM},H::Center);
+    }
+}
+
+pub fn calendar_mark(c:&Card, x:f32, y:f32) {
+    let green=Color32::from_rgb(96,218,166);
+    c.painter.rect_stroke(c.rect(x-4.8,y-4.5,9.6,9.3),1.5*c.s,Stroke::new(0.95*c.s,green),egui::StrokeKind::Inside);
+    c.seg((x-4.2,y-1.9),(x+4.2,y-1.9),0.85,green);
+    for dx in [-2.5,2.5] { c.seg((x+dx,y-5.5),(x+dx,y-3.3),0.95,green); }
+    for dy in [0.0,2.1] {
+        for dx in [-2.3,0.0,2.3] { c.circle(x+dx,y+dy,0.55,green); }
     }
 }
 

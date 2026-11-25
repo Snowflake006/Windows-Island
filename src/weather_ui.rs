@@ -5,6 +5,7 @@ use crate::theme::{self, W};
 use crate::weather::{self, Kind};
 use eframe::egui::{self, Color32};
 use std::f32::consts::{FRAC_PI_2, PI, TAU};
+use std::time::Duration;
 
 const SUN: Color32 = Color32::from_rgb(255, 196, 72);
 const SUN_CORE: Color32 = Color32::from_rgb(255, 168, 44);
@@ -74,6 +75,8 @@ const SUN_SLIDE: f32 = 1.4;
 const TAP_FX: f32 = 0.38;
 /// 进入天气页后，图标环境动效持续的秒数；之后静止，指针停在页面上时继续。
 const AMBIENT_SECS: f64 = 6.0;
+const WEATHER_AMBIENT_FRAME: Duration = Duration::from_nanos(33_333_333);
+const WEATHER_TRANSITION_FRAME: Duration = Duration::from_nanos(16_666_667);
 
 /// 胶囊上的温度文字：取整并带度符，负零归零。
 /// 温度文字：取整并带度符，负零归零。零下的减号在绘制时另行处理，见 `paint_temp`。
@@ -568,7 +571,7 @@ fn paint_forecast(c: &Card, snapshot: &weather::Snapshot, t: f32, lift: f32, pre
     c.seg((24.0, 122.0), (395.0, 122.0), 0.8, Color32::from_white_alpha(16));
     let span = 371.0 / weather::FORECAST_DAYS as f32;
     let col = |index: usize| 24.0 + span * (index as f32 + 0.5);
-    let days: Vec<_> = snapshot.days.iter().take(weather::FORECAST_DAYS).collect();
+    let days = &snapshot.days[..snapshot.days.len().min(weather::FORECAST_DAYS)];
     let (lo, hi) = days.iter().fold((f32::MAX, f32::MIN), |(lo, hi), day| (lo.min(day.low), hi.max(day.high)));
     let curve_y = |temp: f32| 202.0 - (temp - lo) / (hi - lo).max(1.0) * 12.0;
     for index in 0..weather::FORECAST_DAYS {
@@ -611,13 +614,11 @@ fn paint_tap(c: &Card, x: f32, y: f32, k: f32, color: Color32) {
     c.circle(x, y, 3.2 * (1.0 - e), paint::alpha(color, 0.85 * fade));
 }
 
-/// 环境动效时钟：只在 `active` 时前进并以约 30 帧请求重绘；静止时不再请求，
-/// 页面常开也不会持续占用 CPU / GPU。恢复时从停下的位置接着动，不会跳帧。
+/// 环境动效时钟：静止时暂停，恢复时从停下的位置接着动。
 fn ambient_clock(ctx: &egui::Context, id: egui::Id, active: bool, now: f64) -> f32 {
     let (mut clock, last) = ctx.data(|d| d.get_temp::<(f64, f64)>(id)).unwrap_or((0.0, now));
     if active {
         clock += (now - last).clamp(0.0, 0.1);
-        ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
     ctx.data_mut(|d| d.insert_temp(id, (clock, now)));
     clock as f32
@@ -915,13 +916,13 @@ impl App {
     }
 
     pub(crate) fn page_weather(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        if c.live && !env.fullscreen_hidden { self.weather_repaint = Some(Duration::from_secs(1)); }
         self.page_weather_body(c,env,cmds);
         self.weather_header_action(&c.shifted(0.0,-self.vpn_status_space()));
         if self.weather.solar_open {self.weather.picker_open=false;return;}
         // 地点行「📍 地名 ▾」是城市切换入口：在内容点击区之后注册，优先于「轻点切换日照」；
         // 面板最后注册，命中优先级最高。
-        let snapshot=self.weather.snapshot.clone();
-        let (x,y,w,h)=self.weather_place_trigger(c,snapshot.as_ref());
+        let (x,y,w,h)=self.weather_place_trigger(c,self.weather.snapshot.as_ref());
         let place=c.hit(x,y,w,h,"weather-place").on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("切换城市");
         let (hover,_)=c.hover_t(&place);
         if hover>0.0 {c.fill(x,y,w,h,h/2.0,Color32::from_white_alpha((hover*14.0) as u8));}
@@ -929,7 +930,9 @@ impl App {
         let ctx=c.ui.ctx().clone();
         let open=ctx.animate_bool_with_time(egui::Id::new(("weather-picker",c.live)),self.weather.picker_open,0.16);
         if open>0.0 {self.paint_weather_picker(c,open);}
-        if c.live && open>0.0 && open<1.0 {ctx.request_repaint();}
+        if self.weather_repaint.is_some() && c.live && open>0.0 && open<1.0 {
+            self.weather_repaint=Some(WEATHER_TRANSITION_FRAME);
+        }
     }
 
     fn weather_header_action(&mut self, c:&Card) {
@@ -957,10 +960,7 @@ impl App {
         let ready=self.weather.solar_open || self.weather_can_refresh();
         let label=if self.weather.solar_open {"返回天气"} else if self.weather.loading {"更新中"}
             else if ready {"刷新"} else {"稍后刷新"};
-        let (hover,press)=c.hover_t(&button);
-        let visual=c.scaled(X+WIDTH/2.0,Y+HEIGHT/2.0,1.0-0.05*press);
-        visual.fill(X,Y,WIDTH,HEIGHT,HEIGHT/2.0,Color32::from_white_alpha((14.0+18.0*hover+24.0*press) as u8));
-        visual.text(X+WIDTH/2.0,Y+13.5,label,10.0,W::Regular,if ready {theme::GRAY}else{theme::DIM},H::Center);
+        c.header_action(&button,egui::Rect::from_min_size(egui::pos2(X,Y),egui::vec2(WIDTH,HEIGHT)),label,ready);
     }
 
     fn page_weather_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
@@ -985,7 +985,7 @@ impl App {
             cmds.push(Cmd::OpenUrl(source.url().into()));
         }
 
-        let Some(snapshot) = self.weather.snapshot.clone() else {
+        let Some(snapshot) = self.weather.snapshot.as_ref() else {
             let (title, detail) = if loading {
                 ("正在获取当地天气…", "首次定位需要几秒钟".to_string())
             } else if let Some(error) = &self.weather.error {
@@ -1018,12 +1018,9 @@ impl App {
             self.weather.tap=Some((at.x,at.y,env.t));
         }
         let ctx=c.ui.ctx().clone();
-        // 进页面后先动几秒再静止；指针停在页面上时继续动。离开再回来重新计时。
-        let seen_id=egui::Id::new(("weather-page-seen",c.live));
-        let (mut seen,last)=ctx.data(|d|d.get_temp::<(f64,f64)>(seen_id)).unwrap_or((env.t,env.t));
-        if env.t-last>0.5 {seen=env.t;}
-        ctx.data_mut(|d|d.insert_temp(seen_id,(seen,env.t)));
-        let ambient=c.live && (response.hovered() || env.t-seen<AMBIENT_SECS);
+        // 只在真正进页时重新计时，静止页的一秒刷新不能重新启动动画。
+        let active=c.live && self.weather_repaint.is_some();
+        let ambient=active && (env.t-*self.weather_ambient_since.get_or_insert(env.t)<AMBIENT_SECS || response.hovered());
         let t=ambient_clock(&ctx,egui::Id::new(("weather-ambient",c.live)),ambient,env.t);
         // 日照入口卡的悬停与按下：只在指针落在卡片范围内时生效。
         let on_entry=response.hover_pos().map(|p|c.to_local(p)).is_some_and(|p|(300.0..384.0).contains(&p.x)&&(77.0..111.0).contains(&p.y)) && !self.weather.solar_open;
@@ -1034,20 +1031,22 @@ impl App {
         // 两个视图交叉淡入，同时轻微缩放，切换有景深感。
         if mix<1.0 {
             let forecast=c.faded((1.0-mix).powi(2)).scaled(209.5,128.0,1.0-0.04*mix).ghost();
-            paint_forecast(&forecast,&snapshot,t,lift,press);
+            paint_forecast(&forecast,snapshot,t,lift,press);
         }
         if mix>0.0 {
             let solar=c.faded(mix.powi(2)).scaled(209.5,128.0,0.96+0.04*mix).ghost();
-            paint_sun_times(&solar,&snapshot,weather_now(env),t,if self.weather.solar_open{slide}else{1.0});
+            paint_sun_times(&solar,snapshot,weather_now(env),t,if self.weather.solar_open{slide}else{1.0});
         }
         if let Some((x,y,at))=self.weather.tap {
             let k=(env.t-at) as f32/TAP_FX;
             if k<1.0 {paint_tap(c,x,y,k.max(0.0),if self.weather.solar_open{SUN}else{theme::CYAN});}
             else {self.weather.tap=None;}
         }
-        if c.live {
-            // 只有过渡动画进行中才逐帧重绘；常态由 ambient_clock 决定，静止时不重绘。
-            if self.weather.tap.is_some() || (self.weather.solar_open && slide<1.0) || (mix>0.0&&mix<1.0) || (lift>0.0&&lift<1.0) || (press>0.0&&press<1.0) {ctx.request_repaint();}
+        if active {
+            let transitioning=self.weather.tap.is_some() || (self.weather.solar_open && slide<1.0)
+                || (0.0<mix && mix<1.0) || (0.0<lift && lift<1.0) || (0.0<press && press<1.0);
+            if transitioning { self.weather_repaint=Some(WEATHER_TRANSITION_FRAME); }
+            else if ambient { self.weather_repaint=Some(WEATHER_AMBIENT_FRAME); }
         }
     }
 
@@ -1059,7 +1058,12 @@ impl App {
         let (rect, hero) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
         let c = Card::new(ui, rect.min, rect);
         // 设置页常开时不持续重绘：只在指针停在卡片上时让图标动起来。
-        let t = ambient_clock(&ctx, hero.id.with("ambient"), hero.hovered(), ctx.input(|i| i.time));
+        let hovered = hero.hovered();
+        let (now, predicted) = ctx.input(|i| (i.time, i.predicted_dt));
+        if hovered {
+            ctx.request_repaint_after(WEATHER_AMBIENT_FRAME + Duration::from_secs_f32(predicted));
+        }
+        let t = ambient_clock(&ctx, hero.id.with("ambient"), hovered, now);
         let snapshot = self.weather.snapshot.clone();
         let kind = snapshot.as_ref().map(|s| weather::kind(s.code, s.day));
         let (top, bottom) = kind.map(hero_colors).unwrap_or((Color32::from_rgb(86, 94, 112), Color32::from_rgb(52, 58, 72)));

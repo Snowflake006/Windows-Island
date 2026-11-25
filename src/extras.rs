@@ -1591,7 +1591,7 @@ impl App {
                             setting_row(ui,"智能体状态","收起时显示品牌图标和工作状态灯",&mut self.settings.companion_bar);
                             ui.add_enabled_ui(self.settings.companion_bar,|ui|{
                                 setting_row(ui,"状态文字","单个智能体时显示思考中、已完成等文字",&mut self.settings.companion_labels);
-                                setting_row(ui,"空闲时显示待办","没有工作中的后台智能体时，轮播今日待办",&mut self.settings.companion_todos);
+                                setting_row(ui,"空闲时显示待办和日程","智能体空闲时显示下一条日程，有待办时交替显示",&mut self.settings.companion_todos);
                                 settings_control_row_right(ui,"最多显示图标",|ui|{ui.add(egui::Slider::new(&mut self.settings.companion_max_icons,1..=6).suffix(" 个"));});
                                 settings_control_row_right(ui,"完成后停留",|ui|{ui.add(egui::Slider::new(&mut self.settings.companion_done_seconds,1..=10).suffix(" 秒"));});
                             });
@@ -1719,7 +1719,8 @@ impl App {
                                     // 给百分比和恢复按钮留出空间，宽窗口仍使用原来的轨道长度。
                                     ui.spacing_mut().slider_width=(ui.available_width()-150.0).clamp(64.0,180.0);
                                     island_size_slider(ui,&mut self.settings.island_size);
-                                    if ui.add_enabled(self.settings.island_size!=100,egui::Button::new("恢复默认")).clicked(){self.settings.island_size=100;}
+                                    let default_size=crate::model::ISLAND_SIZE_DEFAULT;
+                                    if ui.add_enabled(self.settings.island_size!=default_size,egui::Button::new("恢复默认")).clicked(){self.settings.island_size=default_size;}
                                 }).response
                             });
                             settings_hint(ui,"只影响岛体，放大后文字和图标依旧清晰。");

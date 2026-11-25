@@ -18,7 +18,12 @@ $vpnLoaded=$false
 try { & (Join-Path $root 'Hello.ps1') -Directory $dataDir } catch {}
 $pending=$null; $vpnPending=$null; $desktop=$null; $fast=$null
 $agents=@(); $usage=@(); $vpnState=@{Connected=$false;Text='正在检查连接'}
+$codexCache=@{}; $lastPayload=$null; $lastHeartbeat=0
+$desktopStatusPath=Join-Path $dataDir 'desktop-agent-status.json'
+$desktopStamp=$null; $view=$null
 try {
+ try { [Diagnostics.Process]::GetCurrentProcess().PriorityClass='BelowNormal' } catch {}
+ $ownerProcess=if (!$Once) { [Diagnostics.Process]::GetProcessById($Owner) }
  $info=[Diagnostics.ProcessStartInfo]::new('powershell.exe')
  $info.Arguments='-NoProfile -STA -ExecutionPolicy Bypass -File "'+(Join-Path $root 'DesktopAgentMonitor.ps1')+'" -Owner '+$Owner
  $info.UseShellExecute=$false; $info.CreateNoWindow=$true
@@ -32,13 +37,13 @@ try {
  }
  $nextFull=[datetime]::MinValue; $nextVpn=[datetime]::MinValue
  do {
-  if (!$Once -and !(Get-Process -Id $Owner -ErrorAction SilentlyContinue)) { break }
+  if ($ownerProcess -and $ownerProcess.HasExited) { break }
   if ($desktop -and $desktop.HasExited -and (!$desktopRetry -or [datetime]::Now -ge $desktopRetry)) { $desktop.Dispose();$desktop=[Diagnostics.Process]::Start($desktopInfo);$desktopRetry=[datetime]::Now.AddSeconds(3) }
   if (!$pending -and [datetime]::Now -ge $nextFull) {
    $collector.Commands.Clear(); $null=$collector.AddScript($collection).AddArgument($dataDir).AddArgument($root); $pending=$collector.BeginInvoke()
   }
   if ($pending -and $pending.IsCompleted) {
-   $result=@($collector.EndInvoke($pending)) | Select-Object -Last 1; $pending=$null; $nextFull=[datetime]::Now.AddSeconds(2)
+   $result=@($collector.EndInvoke($pending)) | Select-Object -Last 1; $pending=$null; $nextFull=[datetime]::Now.AddSeconds(4)
    if ($result) {$agents=@($result.Agents);$usage=@($result.Usage)}
   }
   if (!$vpnPending -and [datetime]::Now -ge $nextVpn) {
@@ -60,10 +65,13 @@ try {
   foreach ($a in $display) {
    if ($a.Name -eq 'Codex') {
     try {
-     if (!$codexInventoryAt -or ([datetime]::Now-$codexInventoryAt).TotalSeconds -ge 2) { $fastCodexFiles=Get-ChildItem (Join-Path $env:USERPROFILE '.codex\sessions') -Filter *.jsonl -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 20; $codexInventoryAt=[datetime]::Now }
-     $files=$fastCodexFiles
-     if (!$codexCache){$codexCache=@{}}
-     $states=@(foreach($f in $files){$f.Refresh(); $version="$($f.Length):$($f.LastWriteTimeUtc.Ticks)";if(!$codexCache[$f.FullName] -or $codexCache[$f.FullName].Version -ne $version){$codexCache[$f.FullName]=@{Version=$version;Lines=@(Read-SessionTail $f.FullName)}};Add-CodexSessionIdentity (Get-SessionState $codexCache[$f.FullName].Lines) $f.FullName})
+     if (!$codexInventoryAt -or ([datetime]::Now-$codexInventoryAt).TotalSeconds -ge 4) {
+      $fastCodexFiles=@(Get-ChildItem (Join-Path $env:USERPROFILE '.codex\sessions') -Filter *.jsonl -Recurse -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 20)
+      $liveKeys=@($fastCodexFiles.FullName)
+      foreach($key in @($codexCache.Keys)){ if($key -notin $liveKeys){ $codexCache.Remove($key) } }
+      $codexInventoryAt=[datetime]::Now
+     }
+     $states=@(foreach($f in $fastCodexFiles){$f.Refresh();if($f.Exists){(Get-IslandCodexRecord $f $codexCache).State}})
      $states=@(Select-CodexSessions $states)
      $busy=@($states | Where-Object State -in @('action','tool','thinking')); $latest=$states | Where-Object Time | Sort-Object Time -Descending | Select-Object -First 1
      if($busy.Count){$a.State=($busy | Sort-Object Time -Descending | Select-Object -First 1).State} elseif($latest){$a.State=$latest.State}
@@ -78,18 +86,29 @@ try {
    }
   }
   try {
-   $view=Get-Content (Join-Path $dataDir 'desktop-agent-status.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+   $status=Get-Item -LiteralPath $desktopStatusPath -ErrorAction SilentlyContinue
+   if (!$status) { $view=$null; $desktopStamp=$null }
+   elseif ($status.LastWriteTimeUtc.Ticks -ne $desktopStamp) {
+    $view=Get-Content -LiteralPath $desktopStatusPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $desktopStamp=$status.LastWriteTimeUtc.Ticks
+   }
    if($view.Gemini.Present -and ([datetimeoffset]::Now-[datetimeoffset]$view.Gemini.Time).TotalSeconds -lt 4){foreach($a in $display | Where-Object Name -eq 'Gemini'){$a.State=$view.Gemini.State;$a.WindowState=$view.Gemini.WindowState}}
    $display=@(Select-IslandDisplayAgents $display $view.ChatGPT)
   } catch {}
   foreach($a in $display){$a.ProcessIds=@($a.ProcessIds | Where-Object {$_ -and $_ -gt 0} | ForEach-Object {[int]$_})}
   $unlockHint='unknown'
   try { $provider=(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI' -Name LastLoggedOnProvider -ErrorAction Stop).LastLoggedOnProvider; if($provider -eq '{8AF662BF-65A0-4D0A-A540-A338A999D36F}'){$unlockHint='face'}elseif($provider -eq '{D6886603-9D2F-4EB2-B667-1971041FA96B}'){$unlockHint='pin'} } catch {}
-  [Console]::WriteLine((@{UnlockHint=$unlockHint;Agents=@($display);Usage=@($usage);Vpn=$vpnState;Ready=($null -ne $result);SampledAt=[datetimeoffset]::Now.ToUnixTimeSeconds()} | ConvertTo-Json -Depth 12 -Compress))
+  $payload=[ordered]@{UnlockHint=$unlockHint;Agents=@($display);Usage=@($usage);Vpn=$vpnState;Ready=($null -ne $result)} | ConvertTo-Json -Depth 12 -Compress
+  $sampledAt=[datetimeoffset]::Now.ToUnixTimeSeconds()
+  if ($payload -cne $lastPayload -or $sampledAt-$lastHeartbeat -ge 4) {
+   [Console]::WriteLine($payload.Insert($payload.Length-1,',"SampledAt":'+$sampledAt))
+   $lastHeartbeat=$sampledAt; $lastPayload=$payload
+  }
   if($Once -and $result){break}
-  Start-Sleep -Milliseconds 200
+  Start-Sleep -Milliseconds 300
  } while($true)
 } finally {
+ if ($ownerProcess) { $ownerProcess.Dispose() }
  foreach($p in @($desktop,$fast)){if($p){try{if(!$p.HasExited){$p.Kill()}}catch{};$p.Dispose()}}
  $collector.Dispose();$vpn.Dispose()
 }

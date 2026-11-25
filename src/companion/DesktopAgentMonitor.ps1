@@ -32,11 +32,12 @@ if (!$mutex.WaitOne(0)) { $mutex.Dispose(); exit }
 . (Join-Path $PSScriptRoot 'RuntimePaths.ps1')
 $monitorData=Get-WorkPelletDataDirectory $PSScriptRoot
 $path=Join-Path $monitorData 'desktop-agent-status.json'
-$wasThinking=$false
+$wasThinking=$false; $lastWrite=[datetime]::MinValue; $lastPublished=$null
 try {
+ $ownerProcess=if ($Owner) { [Diagnostics.Process]::GetProcessById($Owner) }
  do {
   try {
-  if ($Owner -and !(Get-Process -Id $Owner -ErrorAction SilentlyContinue)) { break }
+  if ($ownerProcess -and $ownerProcess.HasExited) { break }
   $geminiProcesses=@(Get-Process -Name Gemini,GoogleGemini -ErrorAction SilentlyContinue)
   $geminiHandle=[IslandDesktopAgentReader]::FindDesktopWindow([int[]]@($geminiProcesses.Id))
   # MainWindowHandle becomes zero after close-to-tray. The remembered real
@@ -85,9 +86,14 @@ try {
    $lastProbeSignature=$probeSignature
    [IO.File]::AppendAllText((Join-Path $monitorData 'openai-transitions.jsonl'),(($record.ChatGPT | ConvertTo-Json -Depth 4 -Compress)+[Environment]::NewLine),[Text.UTF8Encoding]::new($false))
   }
-  $temp=$path+'.tmp'
-  [IO.File]::WriteAllText($temp,($record | ConvertTo-Json -Depth 4 -Compress),[Text.UTF8Encoding]::new($false))
-  if ([IO.File]::Exists($path)) { [IO.File]::Replace($temp,$path,[System.Management.Automation.Language.NullString]::Value) } else { [IO.File]::Move($temp,$path) }
+  $signature="$geminiSignature|${probeSignature}"
+  if ($Once -or $signature -cne $lastPublished -or ([datetime]::UtcNow-$lastWrite).TotalSeconds -ge 2) {
+   $temp=$path+'.tmp'
+   [IO.File]::WriteAllText($temp,($record | ConvertTo-Json -Depth 4 -Compress),[Text.UTF8Encoding]::new($false))
+   if ([IO.File]::Exists($path)) { [IO.File]::Replace($temp,$path,[System.Management.Automation.Language.NullString]::Value) } else { [IO.File]::Move($temp,$path) }
+   $lastWrite=[datetime]::UtcNow
+   $lastPublished=$signature
+  }
   } catch {
    if ($Once) { throw }
    if (!$lastErrorAt -or ([datetime]::Now-$lastErrorAt).TotalSeconds -ge 10) {
@@ -95,6 +101,9 @@ try {
     $lastErrorAt=[datetime]::Now
    }
   }
-  if (!$Once) { Start-Sleep -Milliseconds 100 }
+  if (!$Once) {
+   $active=$state -eq 'thinking' -or ($chatSnapshot -and $chatSnapshot.State -in @('thinking','chat_thinking','action'))
+   Start-Sleep -Milliseconds $(if ($active) {450} else {900})
+  }
  } while (!$Once)
-} finally { $mutex.ReleaseMutex(); $mutex.Dispose() }
+} finally { if($ownerProcess){$ownerProcess.Dispose()}; $mutex.ReleaseMutex(); $mutex.Dispose() }

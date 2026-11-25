@@ -6,7 +6,7 @@
 //! - 强调色（蓝）换成皮肤的主题色，其余彩色略加深，保证在浅底上可读；
 //! - 带纹理的图形（专辑封面、应用图标）原样保留。
 
-use eframe::egui::{self, Color32};
+use eframe::egui::{self, Color32, Stroke};
 use eframe::epaint::{shape_transform::adjust_colors, ColorMode, Shape};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -180,6 +180,16 @@ fn recolor_with(shape: &mut Shape, p: &Palette, tone: Tone) {
     };
     match shape {
         Shape::Vec(shapes) => shapes.iter_mut().for_each(|s| recolor_with(s, p, tone)),
+        Shape::Text(text) if matches!(&text.galley.job.sections[..], [section]
+            if section.format.color == Color32::PLACEHOLDER
+                && section.format.background == Color32::TRANSPARENT
+                && section.format.underline == Stroke::NONE
+                && section.format.strikethrough == Stroke::NONE) => {
+            // 单色标签的字形由 fallback_color 着色，换肤时保留缓存中的网格。
+            if let Some(color) = &mut text.override_text_color { adjust(color); }
+            adjust(&mut text.fallback_color);
+            adjust(&mut text.underline.color);
+        }
         // 带纹理的网格是图片（专辑封面、图标），保持原样；单色图标照常换色。
         Shape::Mesh(mesh) if mesh.texture_id != egui::TextureId::default() && !is_monochrome(mesh.texture_id) => {}
         // 带纹理的矩形同理，只换描边。
@@ -209,7 +219,7 @@ fn colored_fill(shape: &Shape) -> Option<egui::Rect> {
 /// 图形的主要颜色是否为浅色中性色（白字、白色图标）。
 fn light_neutral(shape: &Shape) -> bool {
     let color = match shape {
-        Shape::Text(t) => t.galley.rows.iter().flat_map(|r| r.visuals.mesh.vertices.first()).next().map(|v| v.color).unwrap_or(t.fallback_color),
+        Shape::Text(t) => plain_text_color(t),
         Shape::Circle(c) => if c.fill.a() > 0 { c.fill } else { c.stroke.color },
         Shape::Path(p) => if p.fill.a() > 0 { p.fill } else if let ColorMode::Solid(c) = p.stroke.color { c } else { return false },
         Shape::Rect(r) => r.fill,
@@ -223,6 +233,13 @@ fn light_neutral(shape: &Shape) -> bool {
     let c = [color.r() as f32 / 255.0 / af, color.g() as f32 / 255.0 / af, color.b() as f32 / 255.0 / af];
     let (max, min) = (c[0].max(c[1]).max(c[2]), c[0].min(c[1]).min(c[2]));
     max - min < 0.12 && luma(c) > 0.8
+}
+
+fn plain_text_color(text: &eframe::epaint::TextShape) -> Color32 {
+    text.override_text_color.unwrap_or_else(|| text.galley.rows.iter()
+        .find_map(|row| row.visuals.mesh.vertices.first().map(|vertex| vertex.color))
+        .filter(|&color| color != Color32::PLACEHOLDER)
+        .unwrap_or(text.fallback_color))
 }
 
 /// 换色函数：输入按深色主题画的颜色，输出该皮肤下的颜色。
@@ -249,10 +266,11 @@ pub fn tone_since(ctx: &egui::Context, layer: egui::LayerId, from: usize, tone: 
 
 fn toned_spans(ctx: &egui::Context, layer: egui::LayerId) -> Vec<(usize, usize, Tone)> {
     let pass = ctx.cumulative_pass_nr();
-    ctx.data(|d| d.get_temp::<Toned>(toned_id()))
-        .filter(|list| list.pass == pass)
-        .map(|list| list.spans.iter().filter(|s| s.0 == layer).map(|s| (s.1, s.2, s.3)).collect())
-        .unwrap_or_default()
+    ctx.data_mut(|d| {
+        let list = d.get_temp_mut_or_default::<Toned>(toned_id());
+        if list.pass != pass { return Vec::new(); }
+        list.spans.iter().filter(|s| s.0 == layer).map(|s| (s.1, s.2, s.3)).collect()
+    })
 }
 
 /// 给某个图层中 `ranges` 范围内的图形换色。

@@ -692,10 +692,10 @@ impl WgpuWinitRunning<'_> {
             }
         });
         if let Some(output) = viewport_output.get_mut(&viewport_id) {
-            // 常规窗口命令在绘制后处理；翻页截图要在本帧提交，并且只提交一次。
+            // 分层窗口的截图直接使用本帧，避免普通截图命令额外唤醒一帧。
             output.commands.retain(|cmd| {
                 if let egui::ViewportCommand::Screenshot(data) = cmd {
-                    if let Some(capture) = data.data.as_ref().and_then(|tag| tag.downcast_ref::<crate::InteractiveCapture>()) {
+                    if let Some(capture) = data.data.as_ref().and_then(|tag| tag.downcast_ref::<crate::ImmediateCapture>()) {
                         screenshot_commands.push(data.clone());
                         viewport.capture_deadline = Some(capture.0);
                         return false;

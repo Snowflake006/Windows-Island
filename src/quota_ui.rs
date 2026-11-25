@@ -409,8 +409,12 @@ impl App {
         if let Some(id)=chosen{self.quota.config.selected=id;self.quota.config.save();self.show_page(6);}
     }
     pub(crate) fn page_quota(&mut self,c:&Card){
-        if c.hit(303.0,8.0,32.0,21.0,"quota-refresh").on_hover_text("刷新额度").clicked(){self.pending.push(Cmd::QuotaRefresh);}
-        c.text(319.0,23.0,if self.quota.busy.is_empty(){"刷新"}else{"更新中"},10.5,W::Regular,theme::GRAY,H::Center);
+        let ready=self.quota.busy.is_empty();
+        let rect=egui::Rect::from_min_size(egui::pos2(297.0,9.0),egui::vec2(44.0,19.0));
+        let mut refresh=c.hit(rect.left(),rect.top(),rect.width(),rect.height(),"quota-refresh").on_hover_text("刷新额度");
+        if ready {refresh=refresh.on_hover_cursor(egui::CursorIcon::PointingHand);}
+        c.header_action(&refresh,rect,if ready{"刷新"}else{"更新中"},ready);
+        if ready && refresh.clicked(){self.pending.push(Cmd::QuotaRefresh);}
         let Some(selected)=self.quota.config.selected_index() else{
             c.text(43.0,61.0,"还没有添加 AI 账号",13.0,W::Bold,theme::WHITE,H::Left);
             c.text(43.0,80.0,"连接 AI 账号，查看剩余额度",10.5,W::Regular,theme::GRAY,H::Left);
